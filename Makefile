@@ -15,7 +15,11 @@ SRC_DIR   = src
 BOOT_SRC    = $(SRC_DIR)/boot/bootloader.asm
 KERNEL_ASM  = $(SRC_DIR)/kernel/entry.asm
 KERNEL_CPP  = $(SRC_DIR)/kernel/kernel.cpp
-LIBC_C      = $(SRC_DIR)/libc/string.c
+LIBC_CPP_VGA   = $(SRC_DIR)/libc/vga.cpp
+LIBC_CPP_STR   = $(SRC_DIR)/libc/string.cpp
+LIBC_CPP_TERM  = $(SRC_DIR)/libc/terminal.cpp
+LIBC_CPP_INT   = $(SRC_DIR)/libc/interrupts.cpp
+LIBC_CPP_IDT   = $(SRC_DIR)/libc/idt.cpp
 
 # Object files to be created in the build directory
 BOOT_BIN    = $(BUILD_DIR)/boot.bin
@@ -23,7 +27,7 @@ KERNEL_ELF  = $(BUILD_DIR)/kernel.elf
 KERNEL_BIN  = $(BUILD_DIR)/kernel.bin
 IMAGE_FILE  = $(BUILD_DIR)/mrhakos.img
 
-OBJS = $(BUILD_DIR)/entry.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/string.o
+OBJS = $(BUILD_DIR)/entry.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/string.o $(BUILD_DIR)/vga.o $(BUILD_DIR)/terminal.o $(BUILD_DIR)/interrupts.o $(BUILD_DIR)/idt.o
 
 # Include paths for our custom library
 INCLUDES = -I$(SRC_DIR)/libc/include
@@ -63,10 +67,30 @@ $(BUILD_DIR)/kernel.o: $(KERNEL_CPP)
 	@echo "=> Compiling C++ kernel: $<"
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/string.o: $(LIBC_C)
+$(BUILD_DIR)/string.o: $(LIBC_CPP_STR)
 	@mkdir -p $(BUILD_DIR)
-	@echo "=> Compiling LibC: $<"
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@echo "=> Compiling LibC C++ (string): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/vga.o: $(LIBC_CPP_VGA)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (vga): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/terminal.o: $(LIBC_CPP_TERM)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (terminal): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/interrupts.o: $(LIBC_CPP_INT)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (interrupts): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/idt.o: $(LIBC_CPP_IDT)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (idt): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
 $(BOOT_BIN): $(BOOT_SRC)
 	@mkdir -p $(BUILD_DIR)

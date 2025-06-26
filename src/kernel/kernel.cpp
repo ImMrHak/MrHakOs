@@ -1,24 +1,33 @@
 #include <stddef.h>
-#include <string.h>
+#include <string.hpp>
+#include <vga.hpp>
+#include <terminal.hpp>
+#include <interrupts.hpp>
 
 extern "C" void kernel_main() {
-    volatile unsigned short* vga_buffer = (unsigned short*)0xB8000;
-    // 80 IS SCREEN WIDTH
-    // 25 IS SCREEN HEIGHT
-    for (int i = 0; i < 80 * 25; ++i) {
-        vga_buffer[i] = (' ' | (0x0F << 8));
-    }
-
-    const char* message = "HI FROM CPP";
-    int screen_pos = 0; // SCREEN POSITION X
-
-    for (int i = 0; message[i] != '\0'; ++i) {
-        // GREEN MESSAGE
-        vga_buffer[screen_pos] = (message[i] | (0x0A << 8));
-        screen_pos++;
-    }
-
-    // Hang forever so the message stays on screen.
+    // Initialize VGA console
+    Vga vga;
+    
+    // Initialize terminal
+    Terminal terminal;
+    terminal.init(&vga);
+    
+    // Set up interrupt system
+    Interrupts interrupts;
+    interrupts.init();
+    
+    // Connect terminal to interrupt system
+    terminal.setupInterrupts(&interrupts);
+    
+    // Display welcome message
+    vga.set_color(0x0A); // Green on black
+    terminal.putString("Welcome to MrHakOS with Keyboard Interrupt Support!\n");
+    terminal.putString("Type 'help' for available commands\n\n");
+    
+    // Run the terminal
+    terminal.run();
+    
+    // This code should never be reached due to the loop in terminal.run()
     while (true) {
         asm volatile("hlt");
     }
