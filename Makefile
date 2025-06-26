@@ -1,60 +1,78 @@
-# MrHakOS Makefile
+# MrHakOS Makefile (Version 4 - Simplified and Corrected)
 
-# Compiler/Assembler settings
-ASM=nasm
-LD=ld
-QEMU=qemu-system-i386
+# Toolchain
+CC      = i686-elf-gcc
+CXX     = i686-elf-g++
+AS      = nasm
+LD      = i686-elf-ld
+OBJCOPY = i686-elf-objcopy
 
 # Directories
-BOOT_DIR=src/boot
-KERNEL_DIR=src/kernel
-BIN_DIR=bin
+BUILD_DIR = bin
+SRC_DIR   = src
 
-# Files
-BOOTLOADER=$(BOOT_DIR)/bootloader.asm
-KERNEL_ENTRY=$(KERNEL_DIR)/entry.asm
-KERNEL=$(KERNEL_DIR)/kernel.asm
+# Explicitly list all source files
+BOOT_SRC    = $(SRC_DIR)/boot/bootloader.asm
+KERNEL_ASM  = $(SRC_DIR)/kernel/entry.asm
+KERNEL_CPP  = $(SRC_DIR)/kernel/kernel.cpp
+LIBC_C      = $(SRC_DIR)/libc/string.c
 
-# Output files
-BOOTLOADER_BIN=$(BIN_DIR)/bootloader.bin
-KERNEL_ENTRY_OBJ=$(BIN_DIR)/entry.o
-KERNEL_OBJ=$(BIN_DIR)/kernel.o
-KERNEL_BIN=$(BIN_DIR)/kernel.bin
-OS_IMAGE=$(BIN_DIR)/os-image.bin
+# Object files to be created in the build directory
+BOOT_BIN    = $(BUILD_DIR)/boot.bin
+KERNEL_ELF  = $(BUILD_DIR)/kernel.elf
+KERNEL_BIN  = $(BUILD_DIR)/kernel.bin
+IMAGE_FILE  = $(BUILD_DIR)/mrhakos.img
 
-# Default target
-all: setup $(OS_IMAGE)
+OBJS = $(BUILD_DIR)/entry.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/string.o
 
-# Create necessary directories
-setup:
-	mkdir -p $(BIN_DIR)
+# Include paths for our custom library
+INCLUDES = -I$(SRC_DIR)/libc/include
 
-# Build the bootloader
-$(BOOTLOADER_BIN): $(BOOTLOADER)
-	$(ASM) -f bin -o $@ $<
+# Flags
+CFLAGS   = -ffreestanding -O2 -nostdlib -Wall -Wextra $(INCLUDES)
+CXXFLAGS = -ffreestanding -O2 -nostdlib -fno-exceptions -fno-rtti -Wall -Wextra $(INCLUDES)
+LDFLAGS  = -T $(SRC_DIR)/kernel/linker.ld -nostdlib
 
-# Build the kernel entry
-$(KERNEL_ENTRY_OBJ): $(KERNEL_ENTRY)
-	$(ASM) -f elf32 -o $@ $<
+# --- Build Rules ---
+.PHONY: all run clean
 
-# Build the kernel
-$(KERNEL_OBJ): $(KERNEL)
-	$(ASM) -f elf32 -o $@ $<
+all: $(IMAGE_FILE)
 
-# Link the kernel
-$(KERNEL_BIN): $(KERNEL_ENTRY_OBJ) $(KERNEL_OBJ)
-	$(LD) -m elf_i386 -o $@ -Ttext 0x1000 $^ --oformat binary
+run: all
+	@qemu-system-i386 -fda $(IMAGE_FILE) -no-reboot -no-shutdown
 
-# Build the final OS image
-$(OS_IMAGE): $(BOOTLOADER_BIN) $(KERNEL_BIN)
-	cat $^ > $@
+$(IMAGE_FILE): $(BOOT_BIN) $(KERNEL_BIN)
+	@echo "=> Creating final disk image: $@"
+	@cat $^ > $@
 
-# Run the OS in QEMU
-run: $(OS_IMAGE)
-	$(QEMU) -fda $<
+$(KERNEL_ELF): $(OBJS)
+	@echo "=> Linking kernel ELF: $@"
+	@$(LD) $(LDFLAGS) -o $@ $^
 
-# Clean up
+$(KERNEL_BIN): $(KERNEL_ELF)
+	@echo "=> Converting to flat binary: $@"
+	@$(OBJCOPY) -O binary $< $@
+
+$(BUILD_DIR)/entry.o: $(KERNEL_ASM)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Assembling kernel entry: $<"
+	@$(AS) -f elf32 $< -o $@
+
+$(BUILD_DIR)/kernel.o: $(KERNEL_CPP)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling C++ kernel: $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/string.o: $(LIBC_C)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC: $<"
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+$(BOOT_BIN): $(BOOT_SRC)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Assembling bootloader: $<"
+	@$(AS) -f bin $< -o $@
+
 clean:
-	rm -rf $(BIN_DIR)/*
-
-.PHONY: all setup run clean
+	@echo "=> Cleaning build directory"
+	@rm -rf $(BUILD_DIR)

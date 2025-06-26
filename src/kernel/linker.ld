@@ -1,24 +1,31 @@
-/* MrHakOS Kernel Linker Script */
-
-OUTPUT_FORMAT(binary)
+/* MrHakOS Linker Script */
 ENTRY(_start)
+OUTPUT_FORMAT(elf32-i386)
 
 SECTIONS {
-    . = 0x1000;
+    /* The kernel will be loaded at 64KB (0x10000) by the bootloader */
+    . = 0x10000;
     
-    .text : {
-        *(.text)
+    /* Put our signature section first */
+    .signature : {
+        *(.signature)
     }
     
-    .rodata : {
-        *(.rodata)
+    /* Text section follows */
+    .text : ALIGN(4) {
+        *(.text*)              /* All text sections */
     }
     
-    .data : {
-        *(.data)
+    /* Other sections follow */
+    .rodata : ALIGN(4) {
+        *(.rodata*)
     }
     
-    .bss : {
-        *(.bss)
+    .data : ALIGN(4) {
+        *(.data*)
+    }
+    
+    .bss : ALIGN(4) {
+        *(.bss*)
     }
 }
