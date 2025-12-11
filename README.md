@@ -1,194 +1,271 @@
-# MrHakOS
+# MrHakOS 🚀
 
-A simple operating system with a C++ kernel that displays "WELCOME TO MrHakOS" on boot.
+> *"When I wrote this code—with a lot of help from AI—I understood it. Now, only God knows what's going on."*
 
-## Project Structure
+![Code Understanding Meme](./image/meme.png)
+
+A fully functional operating system written from scratch in C++ and Assembly, featuring both 32-bit and 64-bit kernels with a complete terminal interface, filesystem, and interrupt handling.
+
+## ✨ Features
+
+### Core Features
+- **Dual Architecture Support**: Both 32-bit (Protected Mode) and 64-bit (Long Mode) kernels
+- **Custom Bootloader**: BIOS-based bootloader with A20 line enabling and mode switching
+- **VGA Text Mode**: Full-featured VGA driver with cursor control and scrolling
+- **Keyboard Input**: PS/2 keyboard driver with interrupt-based input handling
+- **Terminal Interface**: Interactive command-line terminal with command history
+
+### Filesystem
+- **In-Memory Filesystem**: Hierarchical directory structure
+- **File Operations**:
+  - `touch` - Create .hak files
+  - `cat` - Read file contents
+  - `echo` - Write to files using `>` redirection
+  - `cp` - Copy files (supports directory paths!)
+  - `mv` - Move/rename files and directories
+  - `mkdir` - Create directories
+  - `cd` - Navigate directories
+  - `ls` - List directory contents
+
+### System Commands
+- `clear` - Clear the screen
+- `help` - Display available commands
+- `mrhakos` - Show OS information
+
+### Technical Features
+- **Interrupt Handling**: Custom IDT setup with keyboard ISR
+- **Memory Management**: Custom `operator new/delete` implementations
+- **String Library**: Freestanding C++ string operations
+- **Stack Safety**: Static buffers to prevent stack overflow in 64-bit mode
+- **Clean Build System**: Comprehensive Makefile for both architectures
+
+## 🏗️ Architecture
+
+### 32-bit (Protected Mode)
+```
+BIOS → Bootloader → Protected Mode → Kernel Entry → C++ Kernel → Terminal
+```
+
+### 64-bit (Long Mode)
+```
+BIOS → Bootloader → Protected Mode → PAE + Paging → Long Mode → Kernel Entry → C++ Kernel → Terminal
+```
+
+## 📁 Project Structure
 
 ```
-.
-├── Makefile           # Build instructions
-├── README.md         # This file
-├── build_and_run.bat # Windows build and run script
-├── build_and_run.sh  # Linux/macOS build and run script
-└── src/              # Source code
-    ├── boot/         # Boot code
-    │   └── bootloader.asm  # Bootloader assembly code
-    └── kernel/       # Kernel code
-        ├── entry.asm       # Kernel entry point
-        ├── kernel.cpp      # Main kernel code in C++
-        └── linker.ld       # Linker script for kernel
+MrHakOS/
+├── Makefile              # Build system for both 32/64-bit
+├── build_and_run.sh      # Quick build & run script (Linux/macOS)
+├── build_and_run.bat     # Quick build & run script (Windows)
+├── README.md             # This file
+├── bin/                  # Build outputs
+│   ├── mrhakos.img       # 32-bit OS image
+│   └── mrhakos64.img     # 64-bit OS image
+└── src/
+    ├── boot/
+    │   ├── bootloader.asm    # 32-bit bootloader
+    │   └── bootloader64.asm  # 64-bit bootloader
+    ├── kernel/
+    │   ├── entry.asm         # 32-bit kernel entry
+    │   ├── entry64.asm       # 64-bit kernel entry
+    │   ├── kernel.cpp        # Main kernel code
+    │   ├── linker.ld         # 32-bit linker script
+    │   └── linker64.ld       # 64-bit linker script
+    └── libc/
+        ├── include/          # Header files
+        │   ├── vga.hpp       # VGA driver
+        │   ├── terminal.hpp  # Terminal interface
+        │   ├── interrupts.hpp # Interrupt handling
+        │   ├── filesystem.hpp # Filesystem
+        │   ├── string.hpp    # String operations
+        │   └── io.hpp        # I/O port operations
+        ├── vga.cpp           # VGA implementation
+        ├── terminal.cpp      # Terminal implementation
+        ├── interrupts.cpp    # IDT and ISR setup
+        ├── filesystem.cpp    # Filesystem implementation
+        ├── string.cpp        # String library
+        ├── idt.cpp           # IDT operations
+        ├── isr.asm           # 32-bit ISR stubs
+        └── isr64.asm         # 64-bit ISR stubs
 ```
 
-## Prerequisites
+## 🛠️ Prerequisites
 
-To build and run MrHakOS, you need the following tools:
+### Required Tools
 
-- NASM (Netwide Assembler)
-- G++ (GNU C++ Compiler)
-- LD (GNU Linker)
-- objcopy (part of GNU Binutils)
-- QEMU (for emulation)
+| Tool | Purpose | Installation |
+|------|---------|--------------|
+| **NASM** | Assembly compiler | [nasm.us](https://www.nasm.us/) |
+| **i686-elf-gcc/g++** | 32-bit cross-compiler | Custom build or package manager |
+| **clang++/lld** | 64-bit compiler | Package manager |
+| **QEMU** | Emulator | [qemu.org](https://www.qemu.org/) |
 
-### Installing Prerequisites
+### Installation
 
-#### On Windows:
-
-1. Install NASM from: https://www.nasm.us/
-2. Install MinGW (which includes G++, LD, and objcopy) from: https://www.mingw-w64.org/
-3. Install QEMU from: https://www.qemu.org/download/
-
-Make sure to add all these tools to your PATH.
-
-#### On Linux:
-
+#### Linux (Debian/Ubuntu)
 ```bash
 sudo apt-get update
-sudo apt-get install nasm g++ binutils qemu-system-x86 gcc-multilib g++-multilib
+sudo apt-get install nasm qemu-system-x86 clang lld build-essential
+# For 32-bit: install i686-elf cross-compiler separately
 ```
 
-Note: `gcc-multilib` and `g++-multilib` are required for 32-bit development on 64-bit systems.
-
-#### On macOS:
-
+#### macOS
 ```bash
-brew install nasm gcc binutils qemu
+brew install nasm qemu llvm
+# For 32-bit: install i686-elf cross-compiler via Homebrew
 ```
 
-Note: On newer macOS versions, you might need additional configuration for 32-bit development. Consider using a cross-compilation toolchain or Docker if you encounter architecture compatibility issues.
+#### Windows
+1. Install NASM from [nasm.us](https://www.nasm.us/)
+2. Install MinGW-w64 or MSYS2
+3. Install QEMU from [qemu.org](https://www.qemu.org/)
+4. Add all tools to your PATH
 
-## Building and Running the OS
+## 🚀 Quick Start
 
-### Using Makefile
-
-To build the operating system using the Makefile, run:
-
+### Build and Run (32-bit)
 ```bash
-make
+make clean && make all && make run
 ```
 
-This will create the necessary directories and build the OS image in the `bin` directory.
-
-To run the OS in QEMU using the Makefile, use:
-
+### Build and Run (64-bit)
 ```bash
-make run
+make clean && make all64 && make run64
 ```
 
 ### Using Scripts
-
-Alternatively, you can use the provided scripts to build and run the OS:
-
-#### On Linux/macOS:
-
 ```bash
-# Make the script executable first
+# Linux/macOS
 chmod +x build_and_run.sh
-# Then run it
 ./build_and_run.sh
-```
 
-#### On Windows:
-
-```cmd
+# Windows
 build_and_run.bat
 ```
 
-**Note for Windows Users:**
+## 💻 Usage Examples
 
-The Windows build script uses specific configurations to handle differences in the Windows toolchain:
+Once MrHakOS boots, you'll see:
+```
+Welcome MrHakOs Terminal
+MrHakOS >>
+```
 
-1. It uses the `elf32` format for NASM instead of just `elf`
-2. It uses a two-step process for creating the kernel binary:
-   - First, it creates an ELF file using the Windows LD with `-m i386pe` flag and a linker script
-   - Then, it converts the ELF file to a flat binary using `objcopy`
+Try these commands:
+```bash
+# Get help
+help
 
-This approach avoids the common error: `ld: cannot perform PE operations on non PE output file`.
+# Create a directory
+mkdir documents
 
-If you encounter linking errors, make sure you have the correct version of binutils installed (which includes both LD and objcopy). Some versions of MinGW or MSYS2 may have compatibility issues with the linking process.
+# Create and write to a file
+touch hello.hak
+echo Hello, World! > hello.hak
+cat hello.hak
 
-These scripts will compile the OS and automatically launch it in QEMU.
+# Copy file to directory
+cp hello.hak documents/hello.hak
 
-## How It Works
+# Navigate and list
+cd documents
+ls
+cat hello.hak
 
-1. The bootloader (`src/boot/bootloader.asm`) is loaded by the BIOS at address 0x7C00.
-2. The bootloader sets up the environment, switches to 32-bit protected mode, and jumps to the kernel entry point at 0x1000.
-3. The kernel entry point (`src/kernel/entry.asm`) calls the C++ `kernel_main` function.
-4. The C++ kernel (`src/kernel/kernel.cpp`) initializes the VGA text mode display and shows the welcome message.
+# Rename a file
+mv hello.hak greeting.hak
 
-## Architecture Compatibility
+# Back to root
+cd /
+ls
+```
 
-MrHakOS is designed to run in 32-bit protected mode. All build scripts and the Makefile have been configured to ensure compatibility across different systems:
+## 🔧 Technical Deep Dive
 
-- On 64-bit Linux systems, we use `-f elf32` for NASM and `-m elf_i386` for LD
-- On Windows, we use a two-step process with objcopy to handle PE format issues
-- On macOS, additional configuration may be needed for 32-bit development
+### Memory Layout
+```
+0x00000000 - 0x000003FF : Real Mode IVT (Interrupt Vector Table)
+0x00000400 - 0x000004FF : BIOS Data Area
+0x00000500 - 0x00007BFF : Free conventional memory
+0x00007C00 - 0x00007DFF : Bootloader (512 bytes)
+0x00010000 - 0x0001FFFF : Kernel loaded here (~64KB)
+0x0009F000 - 0x0009FFFF : Stack (4KB)
+0x000A0000 - 0x000BFFFF : VGA memory
+0x000B8000 - 0x000B8FA0 : VGA text buffer (80x25)
+```
 
-These settings ensure that the OS can be built consistently across different platforms.
+### Key Implementation Details
 
-## C++ Kernel Features
+#### 64-bit Stack Overflow Fix
+Large stack-allocated arrays (512+ bytes) caused crashes in 64-bit mode. Solution: Use `static` buffers instead.
+```cpp
+// DON'T: Stack overflow in 64-bit
+void processCommand(const char* cmd) {
+    char command[256];  // Stack allocated
+    char args[256];     // Stack allocated
+}
 
-The C++ kernel provides the following features:
+// DO: Static buffers
+void processCommand(const char* cmd) {
+    static char command[256];  // Static - safe!
+    static char args[256];
+}
+```
 
-1. VGA text mode display with color support
-2. Terminal-like text output with newline handling
-3. Basic string handling functions
+#### ISR Stack Alignment
+x86-64 ABI requires 16-byte stack alignment before `call` instructions. The ISR naturally achieves this:
+- CPU pushes 40 bytes (5×8) after interrupt
+- ISR pushes 120 bytes (15×8) for registers
+- Total: 160 bytes = 16-byte aligned ✓
 
-The kernel is compiled with the following flags to ensure it works in a freestanding environment:
+## 🐛 Debugging Tips
 
-- `-ffreestanding`: Indicates that the standard library may not exist
-- `-nostdlib`: Don't use the standard library
-- `-nostdinc++`: Don't use the standard C++ includes
-- `-fno-exceptions` and `-fno-rtti`: Disable C++ exceptions and RTTI (Run-Time Type Information)
+### Debug Markers (Currently Enabled)
+The codebase includes VGA debug markers showing system initialization progress. These appear as colored letters on screen during boot and can help diagnose crashes.
 
-## Extending the OS
-
-To extend this OS, you might want to:
-
-1. Implement keyboard input handling
-2. Add memory management (heap allocation)
-3. Implement interrupts and exception handling
-4. Add multitasking support
-5. Implement a simple file system
-6. Add more C++ features like classes for device drivers
-
-## Troubleshooting
+### QEMU Monitor
+Press `Ctrl+Alt+2` in QEMU to access the monitor for debugging:
+```
+info registers  # View CPU registers
+x /10i $rip     # Disassemble at instruction pointer
+```
 
 ### Common Issues
 
-1. **Linking errors:**
-   - Windows Error: `ld: cannot perform PE operations on non PE output file`
-   - Solution: The updated Windows build script uses a two-step process with objcopy to avoid this error. Make sure both LD and objcopy are installed and in your PATH.
-   
-   - Linux Error: `ld: i386 architecture of input file is incompatible with i386:x86-64 output`
-   - Solution: The updated Linux build script uses `-f elf32` for NASM and `-m elf_i386` for LD to ensure 32-bit compatibility on 64-bit systems.
+| Issue | Solution |
+|-------|----------|
+| Black screen on boot | Check bootloader GDT descriptor (use `dq` for 64-bit) |
+| Keyboard not working | Verify ISR name matches `extern "C"` declaration |
+| Crash on command entry | Use static buffers, not stack arrays |
+| Terminal not showing | Ensure VGA buffer is at `0xB8000` |
 
-2. **C++ compilation errors:**
-   - Error: `undefined reference to 'operator new'` or similar
-   - Solution: Make sure you're compiling with `-nostdlib` and not using any standard library features that require runtime support.
+## 📚 Learning Resources
 
-3. **NASM format errors:**
-   - Error: `nasm: error: unrecognized output format`
-   - Solution: Different versions of NASM may support different output formats. Try using `elf32` instead of `elf` on Windows.
+- [OSDev Wiki](https://wiki.osdev.org/) - Comprehensive OS development resource
+- [Intel 64 and IA-32 Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
+- [AMD64 Architecture Programmer's Manual](https://www.amd.com/en/support/tech-docs)
 
-4. **QEMU not found:**
-   - Error: `QEMU is not installed or not in PATH`
-   - Solution: Make sure QEMU is installed and added to your system PATH.
+## 🎯 Future Enhancements
 
-5. **objcopy not found or errors:**
-   - Error: `objcopy is not installed or not in PATH`
-   - Solution: Make sure you have GNU Binutils installed, which includes objcopy. On Windows, this typically comes with MinGW or MSYS2.
+- [ ] User mode and system calls
+- [ ] Process scheduling and multitasking
+- [ ] Physical and virtual memory management
+- [ ] Disk I/O and persistent filesystem
+- [ ] Network stack
+- [ ] Graphics mode support
+- [ ] UEFI bootloader option
 
-6. **Kernel not loading:**
-   - If you see the bootloader message but not the kernel message, there might be an issue with the kernel linking or loading process.
-   - Check that the kernel binary is being correctly generated and appended to the OS image.
-
-### Getting Help
-
-If you encounter issues not covered here, you can:
-
-1. Check the NASM, G++, LD, and QEMU documentation for your specific platform
-2. Look for OS development communities and forums online
-
-## License
+## 📜 License
 
 This project is open source and available for educational purposes.
+
+## 👨‍💻 Author
+
+**Mohamed Hakkou (ImMrHak)**
+
+---
+
+*Built with ❤️, Assembly, C++, and a lot of debugging*
+
+> **Remember**: If you can't explain your code 3 months later, that's a feature, not a bug! 😄

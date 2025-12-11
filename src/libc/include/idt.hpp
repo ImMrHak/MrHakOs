@@ -1,6 +1,9 @@
-#pragma once
+#ifndef _LIBC_IDT_H
+#define _LIBC_IDT_H
+
 #include <stdint.h>
 
+// 32-bit IDT entry (legacy)
 struct IDTEntry {
     uint16_t offset_low;
     uint16_t selector;
@@ -18,3 +21,5 @@ extern IDTEntry idt[256];
 extern IDTDesc idtDescriptor;
 
 void setIDTEntry(int index, void (*handler)(), uint8_t flags);
+
+#endif

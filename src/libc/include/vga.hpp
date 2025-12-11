@@ -11,7 +11,8 @@ class Vga{
     private:
     volatile unsigned short* vga_buffer = (unsigned short*)0xB8000;
     int x, y;  
-    int color; 
+    int color;
+    bool cursor_enabled;
 
     public:
     // Constructor
@@ -26,6 +27,9 @@ class Vga{
     void set_xy(int x, int y);
     void scroll();
     void set_color(int color);
+    void update_cursor();
+    void set_cursor_enabled(bool enabled);
+    void force_update_cursor();
 };
 
 #ifdef __cplusplus

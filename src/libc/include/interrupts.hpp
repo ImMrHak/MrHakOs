@@ -23,7 +23,6 @@ class Interrupts{
     void registerHandler(uint8_t irq, void (*handler)(void));
 };
 
-// Global function to get the last key pressed from keyboard
 char getLastKey();
 
 #ifdef __cplusplus

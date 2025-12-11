@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <vga.hpp>
 #include <interrupts.hpp>
+#include <filesystem.hpp>
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,9 +17,21 @@ class Terminal{
     private:
     Vga* vga;
     Interrupts* interrupts;
+    FileSystem* filesystem;
     char inputBuffer[256];
     int inputPosition;
     bool readingInput;
+    volatile bool commandReady;
+    
+    // Command handling helper methods
+    void cmdMkdir(const char* args);
+    void cmdLs(const char* args);
+    void cmdCd(const char* args);
+    void cmdCp(const char* args);
+    void cmdMv(const char* args);
+    void cmdTouch(const char* args);
+    void cmdCat(const char* args);
+    void cmdEcho(const char* args);
     
     public:
     // Constructor
@@ -26,8 +39,7 @@ class Terminal{
     
     // Terminal methods
     void clear();
-    void init(Vga* vga);
-    void setupInterrupts(Interrupts* interrupts);
+    void init(Vga* vga, Interrupts* interrupts, FileSystem* filesystem);
     void run();
     void putChar(char c);
     void putString(const char* str);
