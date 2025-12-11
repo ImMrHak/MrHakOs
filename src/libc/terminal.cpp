@@ -163,8 +163,8 @@ void Terminal::processCommand(const char* cmd) {
         putString("  touch   - Create a new .hak file\n");
         putString("  cat     - Display the content of a .hak file\n");
         putString("  echo    - Display text or write to a .hak file using > redirection\n");
-        putString("  cp      - Copy a file (not implemented yet)\n");
-        putString("  mv      - Move a file or directory (not implemented yet)\n");
+        putString("  cp      - Copy a file\n");
+        putString("  mv      - Move a file or directory\n");
     } else if (strcmp(command, "mrhakos") == 0) {
         putString("\n");
         putString("Name: MrHakOS\n");
