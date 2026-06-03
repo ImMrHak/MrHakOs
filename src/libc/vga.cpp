@@ -79,12 +79,6 @@ void Vga::putChar(char c) {
     vga_buffer[index] = (unsigned short)(c | (color << 8));
     x++;
     if (cursor_enabled) update_cursor();
-    // Debug: mark character write
-    volatile unsigned short* dbg = (unsigned short*)0xB8000;
-    dbg[70] = 0x1F57; // 'W' after write
-    // Show current cursor coords (low digits) for debugging
-    dbg[73] = (unsigned short)((('0' + (y % 10)) & 0xFF) | (0x1F << 8));
-    dbg[74] = (unsigned short)((('0' + (x % 10)) & 0xFF) | (0x1F << 8));
 }
 
 // Put a char at x, y on screen
@@ -127,9 +121,6 @@ void Vga::set_xy(int new_x, int new_y) {
 
 // Scroll the screen up one line
 void Vga::scroll() {
-    // Debug: mark scroll start/end
-    volatile unsigned short* dbg = (unsigned short*)0xB8000;
-    dbg[71] = 0x1F52; // 'R' start scroll
     // Move all lines up one position
     for (int y = 0; y < VGA_HEIGHT - 1; ++y) {
         for (int x = 0; x < VGA_WIDTH; ++x) {
@@ -148,7 +139,6 @@ void Vga::scroll() {
     // Move cursor to start of last line
     x = 0;
     y = VGA_HEIGHT - 1;
-    dbg[72] = 0x1F72; // 'r' end scroll
 }
 
 // Set text color

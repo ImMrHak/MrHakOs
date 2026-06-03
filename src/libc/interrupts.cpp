@@ -1,6 +1,7 @@
 #include <interrupts.hpp>
 #include <stdint.h>
 #include <io.hpp>
+#include <serial.hpp>
 
 #if defined(__x86_64__)
 // 64-bit IDT entry format
@@ -40,9 +41,15 @@ static IDTEntry32 idt32[256];
 static IDTDesc32 idtDesc32;
 #endif
 
-// Keyboard scan code buffer and state
-volatile char last_key = 0;
+// Keyboard character queue and state. The queue prevents quick USB legacy
+// bursts from overwriting the single previous key before the terminal loop runs.
+static volatile char key_queue[64];
+static volatile uint8_t key_head = 0;
+static volatile uint8_t key_tail = 0;
 volatile bool shift_pressed = false;
+static volatile bool extended_scancode = false;
+static volatile uint32_t g_keyboard_irq_scancodes = 0;
+static volatile uint32_t g_keyboard_polled_scancodes = 0;
 
 // Keyboard scan code mapping (US layout) - Regular keys
 const char scancode_to_ascii[128] = {
@@ -64,12 +71,22 @@ const char scancode_to_ascii_shifted[128] = {
     '-', 0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
-// ISR symbol provided by assembly stub
+// ISR symbols provided by assembly stubs
+extern "C" void isr_timer();
 extern "C" void isr_keyboard();
 
 // Handlers array and APIs (shared interface)
 typedef void (*handler_t)(void);
 handler_t irq_handlers[16] = { 0 };
+static volatile uint32_t g_timer_ticks = 0;
+static const uint32_t PIT_HZ = 1000;
+static uint16_t g_code_selector = 0x08;
+
+static uint16_t currentCodeSelector() {
+    uint16_t cs;
+    asm volatile("mov %%cs, %0" : "=r"(cs));
+    return cs;
+}
 
 Interrupts::Interrupts() {}
 
@@ -77,7 +94,7 @@ Interrupts::Interrupts() {}
 static void setIDTEntry64(int index, void* handler, uint8_t flags) {
     uint64_t addr = (uint64_t)handler;
     idt64[index].offset_low  = (uint16_t)(addr & 0xFFFF);
-    idt64[index].selector    = 0x08;     // kernel code segment
+    idt64[index].selector    = g_code_selector; // current kernel code segment
     idt64[index].ist         = 0;        // no IST
     idt64[index].type_attr   = flags;    // 0x8E: present, int gate
     idt64[index].offset_mid  = (uint16_t)((addr >> 16) & 0xFFFF);
@@ -87,7 +104,7 @@ static void setIDTEntry64(int index, void* handler, uint8_t flags) {
 #else
 static void setIDTEntry32(int index, uint32_t handler, uint8_t flags) {
     idt32[index].offset_low  = (uint16_t)(handler & 0xFFFF);
-    idt32[index].selector    = 0x08;
+    idt32[index].selector    = g_code_selector;
     idt32[index].zero        = 0;
     idt32[index].type_attr   = flags;    // 0x8E: present, int gate
     idt32[index].offset_high = (uint16_t)((handler >> 16) & 0xFFFF);
@@ -119,8 +136,8 @@ void Interrupts::remapPIC() {
     outb(0xA1, 0x02);
     outb(0x21, 0x01);
     outb(0xA1, 0x01);
-    // Enable only IRQ1 (keyboard)
-    outb(0x21, 0xFD);
+    // Enable IRQ0 (PIT timer) and IRQ1 (keyboard).
+    outb(0x21, 0xFC);
     outb(0xA1, 0xFF);
 }
 
@@ -139,31 +156,131 @@ void Interrupts::registerHandler(uint8_t irq, void (*handler)(void)) {
     irq_handlers[irq] = handler;
 }
 
+static void initPIT() {
+    uint32_t divisor = 1193182u / PIT_HZ;
+    outb(0x43, 0x36); // channel 0, low/high byte, mode 3 square wave
+    outb(0x40, static_cast<uint8_t>(divisor & 0xFF));
+    outb(0x40, static_cast<uint8_t>((divisor >> 8) & 0xFF));
+}
+
+static void enqueueKey(char key) {
+    if (key == 0) {
+        return;
+    }
+    uint8_t next = static_cast<uint8_t>((key_head + 1) & 63);
+    if (next == key_tail) {
+        // Queue full: drop the newest key rather than corrupting the buffer.
+        return;
+    }
+    key_queue[key_head] = key;
+    key_head = next;
+}
+
+static bool processKeyboardScancode(uint8_t scancode) {
+    if (scancode == 0xE0 || scancode == 0xE1) {
+        extended_scancode = true;
+        return false;
+    }
+
+    // Ignore extended key releases/non-text keys for now. This keeps arrow keys,
+    // USB multimedia keys, etc. from turning into garbage characters.
+    if (extended_scancode) {
+        extended_scancode = false;
+        return false;
+    }
+
+    if (scancode == 0x2A || scancode == 0x36) {
+        shift_pressed = true;
+        return false;
+    }
+    if (scancode == 0xAA || scancode == 0xB6) {
+        shift_pressed = false;
+        return false;
+    }
+    if (scancode & 0x80) {
+        return false;
+    }
+
+    char key = shift_pressed ? scancode_to_ascii_shifted[scancode]
+                             : scancode_to_ascii[scancode];
+    enqueueKey(key);
+    return key != 0;
+}
+
 void Interrupts::init() {
+    g_code_selector = currentCodeSelector();
     setupIDT();
     remapPIC();
 #if defined(__x86_64__)
+    setIDTEntry64(0x20, (void*)isr_timer, 0x8E);
     setIDTEntry64(0x21, (void*)isr_keyboard, 0x8E);
 #else
+    setIDTEntry32(0x20, (uint32_t)isr_timer, 0x8E);
     setIDTEntry32(0x21, (uint32_t)isr_keyboard, 0x8E);
 #endif
+    initPIT();
     loadIDT();
     // Do not enable interrupts here; let kernel enable after terminal init
 }
 
-// C++ handler invoked by the ISR stub
+// C++ handlers invoked by the ISR stubs
+extern "C" void isr_timer_handler() {
+    g_timer_ticks++;
+    if (irq_handlers[0]) irq_handlers[0]();
+    outb(0x20, 0x20);
+}
+
 extern "C" void isr_keyboard_handler() {
     uint8_t scancode = inb(0x60);
-    if (scancode == 0x2A || scancode == 0x36) {
-        shift_pressed = true;
-    } else if (scancode == 0xAA || scancode == 0xB6) {
-        shift_pressed = false;
-    } else if (!(scancode & 0x80)) {
-        last_key = shift_pressed ? scancode_to_ascii_shifted[scancode]
-                                 : scancode_to_ascii[scancode];
-        if (irq_handlers[1]) irq_handlers[1]();
+    g_keyboard_irq_scancodes++;
+    if (processKeyboardScancode(scancode) && irq_handlers[1]) {
+        Serial::writeString("[kbd] irq key\n");
+        irq_handlers[1]();
     }
     outb(0x20, 0x20);
 }
 
-char getLastKey() { char k = last_key; last_key = 0; return k; }
+char getLastKey() {
+    if (key_head == key_tail) {
+        return 0;
+    }
+    char k = key_queue[key_tail];
+    key_tail = static_cast<uint8_t>((key_tail + 1) & 63);
+    return k;
+}
+
+bool pollKeyboard() {
+    bool handled = false;
+    // Drain a small burst. USB legacy emulation can deposit several translated
+    // Set-1 scancodes without reliably raising IRQ1 after a GRUB boot.
+    for (int i = 0; i < 16; i++) {
+        uint8_t status = inb(0x64);
+        if ((status & 0x01) == 0) {
+            break;
+        }
+        // If AUX is set, this byte belongs to a PS/2 mouse; ignore it.
+        if (status & 0x20) {
+            (void)inb(0x60);
+            continue;
+        }
+        uint8_t scancode = inb(0x60);
+        g_keyboard_polled_scancodes++;
+        if (processKeyboardScancode(scancode)) {
+            Serial::writeString("[kbd] polled key\n");
+            handled = true;
+        }
+    }
+    if (handled && irq_handlers[1]) {
+        irq_handlers[1]();
+    }
+    return handled;
+}
+
+uint32_t keyboardPolledScancodes() { return g_keyboard_polled_scancodes; }
+uint32_t keyboardIrqScancodes() { return g_keyboard_irq_scancodes; }
+uint32_t timerTicks() { return g_timer_ticks; }
+uint32_t timerMillis() { return g_timer_ticks; }
+void pitSleepMs(uint32_t ms) {
+    uint32_t start = timerMillis();
+    while (timerMillis() - start < ms) { asm volatile("hlt"); }
+}

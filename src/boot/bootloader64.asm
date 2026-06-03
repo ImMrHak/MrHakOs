@@ -3,6 +3,10 @@
 [org 0x7c00]
 [bits 16]
 
+%ifndef KERNEL_SECTORS
+%define KERNEL_SECTORS 64
+%endif
+
 main:
     ; Basic stack and boot drive
     mov ax, 0x9000
@@ -10,11 +14,11 @@ main:
     mov sp, 0xFFFF
     mov [BOOT_DRIVE], dl
 
-    ; Visual debug: write 'B' to VGA to mark boot sector start
-    ; Use segment addressing to avoid 16-bit immediate overflow
+    ; Touch VGA memory with a blank cell. This preserves the old boot path's
+    ; harmless hardware access without leaving visible debug characters.
     mov ax, 0xB800
     mov es, ax
-    mov word [es:0], 0x1F42
+    mov word [es:0], 0x1F20
 
     ; (Removed BIOS teletype printing to save space)
 
@@ -26,20 +30,32 @@ main:
     int 0x13
     jc disk_error
 
-    ; Load kernel (start at sector 2) to 0x10000
-    mov ah, 0x02
-    mov al, 64                ; read 64 sectors (~32KB) to fit C++ kernel
-    mov ch, 0
-    mov dh, 0
-    mov cl, 2
-    mov dl, [BOOT_DRIVE]
-    ; destination ES:BX => 0x1000:0000 = 0x10000
-    mov bx, 0x1000
-    mov es, bx
+    ; Load kernel one sector at a time to avoid BIOS CHS limits.
+    mov ax, 0x1000
+    mov es, ax
     xor bx, bx
+    mov si, KERNEL_SECTORS
+.load_loop:
+    mov ah, 0x02
+    mov al, 1
+    mov ch, [LOAD_CYL]
+    mov dh, [LOAD_HEAD]
+    mov cl, [LOAD_SECTOR]
+    mov dl, [BOOT_DRIVE]
     int 0x13
-    jnc .read_success
-    jmp disk_error
+    jc disk_error
+    add bx, 512
+    inc byte [LOAD_SECTOR]
+    cmp byte [LOAD_SECTOR], 19
+    jb .next_sector
+    mov byte [LOAD_SECTOR], 1
+    xor byte [LOAD_HEAD], 1
+    cmp byte [LOAD_HEAD], 1
+    je .next_sector
+    inc byte [LOAD_CYL]
+.next_sector:
+    dec si
+    jnz .load_loop
 
 .read_success:
 
@@ -66,9 +82,9 @@ main:
 
 [bits 32]
 enter_pm:
-    ; Debug: write 'P' to VGA to indicate Protected Mode entry
+    ; Preserve the old protected-mode VGA touch without visible output.
     mov ebx, 0xB8000
-    mov dword [ebx], 0x1F50
+    mov dword [ebx], 0x1F20
 
     ; (Removed pause to keep boot sector under 512 bytes)
 
@@ -144,6 +160,7 @@ enter_lm:
 
 ; --- Minimal helpers removed to fit within 512 bytes ---
 
+[bits 16]
 enable_a20:
     ; Fast A20 gate enable via port 0x92
     in al, 0x92
@@ -166,6 +183,9 @@ kernel_error:
     jmp $
 
 BOOT_DRIVE db 0
+LOAD_SECTOR db 2
+LOAD_HEAD db 0
+LOAD_CYL db 0
 
 ; 32-bit GDT
 gdt32_start:

@@ -5,6 +5,7 @@
 #include <vga.hpp>
 #include <interrupts.hpp>
 #include <filesystem.hpp>
+#include <network.hpp>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,10 +19,12 @@ class Terminal{
     Vga* vga;
     Interrupts* interrupts;
     FileSystem* filesystem;
+    Network* network;
     char inputBuffer[256];
     int inputPosition;
     bool readingInput;
     volatile bool commandReady;
+    uint8_t lastDhcpState;
     
     // Command handling helper methods
     void cmdMkdir(const char* args);
@@ -32,6 +35,17 @@ class Terminal{
     void cmdTouch(const char* args);
     void cmdCat(const char* args);
     void cmdEcho(const char* args);
+    void cmdNetinfo(const char* args);
+    void cmdNetpoll(const char* args);
+    void cmdArping(const char* args);
+    void cmdPing(const char* args);
+    void cmdDhcp(const char* args);
+    void cmdTraceroute(const char* args);
+    void cmdUdp(const char* args);
+    void cmdDns(const char* args);
+    void cmdTcp(const char* args);
+    void cmdHttp(const char* args);
+    void cmdSecureChat(const char* args);
     
     public:
     // Constructor
@@ -39,7 +53,7 @@ class Terminal{
     
     // Terminal methods
     void clear();
-    void init(Vga* vga, Interrupts* interrupts, FileSystem* filesystem);
+    void init(Vga* vga, Interrupts* interrupts, FileSystem* filesystem, Network* network);
     void run();
     void putChar(char c);
     void putString(const char* str);

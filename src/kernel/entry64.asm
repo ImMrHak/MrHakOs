@@ -9,12 +9,10 @@ kernel_signature:
 section .text
 [global _start]
 _start:
-    ; Basic marker in VGA text buffer (white on blue)
+    ; Basic non-persistent VGA touch; Vga::clear() removes it before prompt.
     mov rdi, 0xB8000
-    mov byte [rdi], 'K'
-    mov byte [rdi+1], 0x1F
-
-
+    mov byte [rdi], ' '
+    mov byte [rdi+1], 0x0F
 
     ; Clear direction flag
     cld

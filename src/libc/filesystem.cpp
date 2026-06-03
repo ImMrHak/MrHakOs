@@ -1,100 +1,83 @@
 #include <filesystem.hpp>
 #include <string.hpp>
 
-// Custom implementation of operator new for our freestanding environment
+static inline void hidden_vga_touch(size_t cell) {
+    volatile unsigned short* vga = (unsigned short*)0xB8000;
+    vga[cell] = 0x0F20;
+}
+
+// Custom implementation of operator new for our freestanding environment.
 void* operator new(size_t size) {
-    // In a real OS, this would allocate memory from the heap
-    // For now, we'll use a static buffer as a simple memory pool
     static char memory_pool[FS_MEMORY_POOL_SIZE];
     static size_t next_free = 0;
-    // Debug: mark allocation activity
-    volatile unsigned short* vga_dbg = (unsigned short*)0xB8000;
-    vga_dbg[41] = 0x1F61; // 'a' indicates operator new called
-    
-    // Align allocation to 16 bytes for 64-bit safety
+    hidden_vga_touch(41);
+
+    // Align allocation to 16 bytes for 64-bit safety.
     next_free = (next_free + 15) & ~((size_t)15);
-    // Check if we have enough space
+
     if (next_free + size > sizeof(memory_pool)) {
-        // Out of memory
         return nullptr;
     }
-    
-    // Allocate memory from our pool
+
     void* ptr = &memory_pool[next_free];
     next_free += size;
-    
-    // Align to 16-byte boundary for next allocation
     next_free = (next_free + 15) & ~((size_t)15);
-    
+
     return ptr;
 }
 
-// Custom implementation of operator new[] for array allocations
 void* operator new[](size_t size) {
-    // Reuse the same implementation as regular new
     return operator new(size);
 }
 
-// Custom implementation of operator delete
+// This simple bump allocator never frees individual allocations yet.
 void operator delete(void* ptr) noexcept {
-    // In this simple implementation, we don't actually free memory
-    // A real implementation would return memory to the heap
-    // This is just a placeholder to satisfy the compiler
-    (void)ptr; // Unused parameter
+    (void)ptr;
 }
 
-// Custom implementation of operator delete with size
 void operator delete(void* ptr, size_t size) noexcept {
-    // Same as regular delete, we don't actually free memory
-    (void)ptr;  // Unused parameter
-    (void)size; // Unused parameter
+    (void)ptr;
+    (void)size;
 }
 
-// Custom implementation of operator delete[] for array deallocations
 void operator delete[](void* ptr) noexcept {
-    // Reuse the same implementation as regular delete
-    operator delete(ptr);
+    (void)ptr;
+}
+
+void operator delete[](void* ptr, size_t size) noexcept {
+    (void)ptr;
+    (void)size;
 }
 
 // Global filesystem instance
 FileSystem* g_filesystem = nullptr;
 
 FileSystem::FileSystem() {
-    // Debug: show constructor entry/exit in VGA for crash isolation
-    volatile unsigned short* vga = (unsigned short*)0xB8000;
-    vga[20] = 0x1F58; // 'X' marks FileSystem ctor start
-    vga[22] = 0x1F78; // 'x' before root assignment
+    hidden_vga_touch(20);
     root = nullptr;
-    vga[23] = 0x1F72; // 'r' after root assignment
+    hidden_vga_touch(22);
     currentDirectory = nullptr;
-    vga[24] = 0x1F63; // 'c' after currentDirectory assignment
-    vga[21] = 0x1F59; // 'Y' marks FileSystem ctor end
-    vga[25] = 0x1F79; // 'y' final mark
+    hidden_vga_touch(23);
+    hidden_vga_touch(24);
+    hidden_vga_touch(21);
+    hidden_vga_touch(25);
 }
 
 void FileSystem::init() {
-    // Debug: mark FileSystem init start/end
-    volatile unsigned short* vga = (unsigned short*)0xB8000;
-    vga[42] = 0x1F6D; // 'm' start of init
-    // Allocate memory for root directory
+    hidden_vga_touch(42);
     root = new FileSystemEntry;
-    vga[43] = 0x1F31; // '1' after root allocation
-    
+    hidden_vga_touch(43);
     initEntry(root, "/", FS_TYPE_DIRECTORY, nullptr);
-    vga[44] = 0x1F32; // '2' after initEntry
-    
+    hidden_vga_touch(44);
     currentDirectory = root;
-    vga[45] = 0x1F33; // '3' after currentDirectory set
-    
+    hidden_vga_touch(45);
     g_filesystem = this;
-    vga[46] = 0x1F34; // '4' after g_filesystem set
-    vga[47] = 0x1F6E; // 'n' end of init
+    hidden_vga_touch(46);
+    hidden_vga_touch(47);
 }
 
 void FileSystem::initEntry(FileSystemEntry* entry, const char* name, FileType type, FileSystemEntry* parent) {
-    // Debug markers to trace initEntry
-    volatile unsigned short* vga = (unsigned short*)0xB8000;
-    vga[48] = 0x1F49; // 'I' start initEntry
+    hidden_vga_touch(48);
     // Copy name (with bounds checking)
     size_t nameLen = strlen(name);
     if (nameLen >= FS_MAX_NAME_LENGTH) {
@@ -115,7 +98,7 @@ void FileSystem::initEntry(FileSystemEntry* entry, const char* name, FileType ty
     if (type == FS_TYPE_DIRECTORY) {
         entry->childCount = 0;
     }
-    vga[49] = 0x1F4A; // 'J' end initEntry
+    hidden_vga_touch(49);
 }
 
 bool FileSystem::mkdir(const char* name) {
@@ -400,53 +383,48 @@ bool FileSystem::createHakFile(const char* name, const char* content) {
         return false; // Not a .hak file
     }
     
-    // Check if file already exists
-    if (findEntry(name, currentDirectory) != nullptr) {
-        return false; // Entry with this name already exists
+    FileSystemEntry* file = findEntry(name, currentDirectory);
+    if (file != nullptr && file->type != FS_TYPE_HAK_FILE) {
+        return false; // A directory or unsupported entry already uses this name.
     }
-    
-    // Check if current directory has space for a new entry
-    if (currentDirectory->childCount >= FS_MAX_FILES) {
-        return false; // Directory is full
+
+    if (file == nullptr) {
+        // Check if current directory has space for a new entry.
+        if (currentDirectory->childCount >= FS_MAX_FILES) {
+            return false; // Directory is full.
+        }
+
+        // Allocate memory for new file.
+        // Avoid implicit zero-initialization that may use problematic memset.
+        file = new FileSystemEntry;
+        if (file == nullptr) {
+            return false; // Out of memory.
+        }
+
+        initEntry(file, name, FS_TYPE_HAK_FILE, currentDirectory);
+        currentDirectory->children[currentDirectory->childCount] = file;
+        currentDirectory->childCount++;
     }
-    
-    // Allocate memory for new file
-    // Avoid implicit zero-initialization that may use problematic memset
-    FileSystemEntry* newFile = new FileSystemEntry;
-    
-    // Check if memory allocation failed
-    if (newFile == nullptr) {
-        return false; // Out of memory
-    }
-    
-    // Initialize new file
-    initEntry(newFile, name, FS_TYPE_HAK_FILE, currentDirectory);
-    
-    // Set file content
+
+    // Set or replace file content. The bump allocator does not reclaim the old
+    // content buffer yet, but overwriting keeps shell semantics predictable.
     size_t contentLen = strlen(content);
     if (contentLen > FS_MAX_FILE_SIZE - 1) {
-        contentLen = FS_MAX_FILE_SIZE - 1; // Truncate if too long
+        contentLen = FS_MAX_FILE_SIZE - 1; // Truncate if too long.
     }
-    
-    // Allocate memory for content
-    newFile->file.content = new char[contentLen + 1];
-    if (newFile->file.content == nullptr) {
-        // Failed to allocate memory for content
-        delete newFile;
+
+    char* newContent = new char[contentLen + 1];
+    if (newContent == nullptr) {
         return false;
     }
-    
-    // Copy content
+
     for (size_t i = 0; i < contentLen; i++) {
-        newFile->file.content[i] = content[i];
+        newContent[i] = content[i];
     }
-    newFile->file.content[contentLen] = '\0';
-    newFile->file.contentSize = contentLen;
-    
-    // Add new file to current directory's children
-    currentDirectory->children[currentDirectory->childCount] = newFile;
-    currentDirectory->childCount++;
-    
+    newContent[contentLen] = '\0';
+    file->file.content = newContent;
+    file->file.contentSize = contentLen;
+
     return true;
 }
 

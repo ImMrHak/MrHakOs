@@ -1,10 +1,11 @@
 [bits 64]
 
+global isr_timer
 global isr_keyboard
+extern isr_timer_handler
 extern isr_keyboard_handler
 
-isr_keyboard:
-    ; Save general-purpose registers
+%macro PUSH_REGS 0
     push rax
     push rcx
     push rdx
@@ -20,11 +21,9 @@ isr_keyboard:
     push r13
     push r14
     push r15
+%endmacro
 
-    ; Call the C++ handler
-    call isr_keyboard_handler
-
-    ; Restore registers
+%macro POP_REGS 0
     pop r15
     pop r14
     pop r13
@@ -40,8 +39,16 @@ isr_keyboard:
     pop rdx
     pop rcx
     pop rax
+%endmacro
 
+isr_timer:
+    PUSH_REGS
+    call isr_timer_handler
+    POP_REGS
+    iretq
 
-
-    ; Return from interrupt
+isr_keyboard:
+    PUSH_REGS
+    call isr_keyboard_handler
+    POP_REGS
     iretq

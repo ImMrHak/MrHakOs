@@ -3,6 +3,10 @@
 [org 0x7c00]
 [bits 16]
 
+%ifndef KERNEL_SECTORS
+%define KERNEL_SECTORS 64
+%endif
+
 main:
     ; --- Step 1: Set up a safe stack and store the boot drive number ---
     mov ax, 0x9000
@@ -24,8 +28,8 @@ main:
     
     ; --- Step 4: Load the kernel from disk (the main operation) ---
     mov ah, 0x02
-    ; *** THE FIX: Load 32 sectors (16KB) to fit the entire kernel. ***
-    mov al, 32
+    ; Load the number of sectors reserved by the Makefile image-size check.
+    mov al, KERNEL_SECTORS
     mov ch, 0
     mov dh, 0
     mov cl, 2
@@ -68,9 +72,6 @@ main:
 [bits 32]
 enter_pm:
     ; We are now in 32-bit Protected Mode.
-    ; Write a 'P' to the screen to confirm entry.
-    mov dword [0xB8000], 0x1F50
-
     ; Set up all segment registers for a flat memory model
     mov ax, DATA_SEG
     mov ds, ax
@@ -87,7 +88,11 @@ enter_pm:
 print:
     mov ah, 0x0e
 .loop:
-    lodsb; or al, al; jz .done; int 0x10; jmp .loop
+    lodsb
+    or al, al
+    jz .done
+    int 0x10
+    jmp .loop
 .done:
     ret
 
