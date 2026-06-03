@@ -46,6 +46,7 @@ BOOT_BIN      := $(BUILD_DIR)/boot.bin
 KERNEL_ELF    := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN    := $(BUILD_DIR)/kernel.bin
 IMAGE_FILE    := $(BUILD_DIR)/mrhakos.img
+BOOTABLE_BIN  := $(BUILD_DIR)/mrhakos-bootable.bin
 BOOT64_BIN    := $(BUILD_DIR)/boot64.bin
 KERNEL64_ELF  := $(BUILD_DIR)/kernel64.elf
 KERNEL64_BIN  := $(BUILD_DIR)/kernel64.bin
@@ -100,7 +101,7 @@ X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
 
 all: all32
 
-all32: $(IMAGE_FILE)
+all32: $(IMAGE_FILE) $(BOOTABLE_BIN)
 
 all64: $(IMAGE_FILE_64)
 
@@ -249,6 +250,13 @@ $(IMAGE_FILE): $(BOOT_BIN) $(KERNEL_BIN) check-sizes32
 	@truncate -s $(FLOPPY_SIZE_BYTES) $@
 	@dd if=$(BOOT_BIN) of=$@ bs=$(SECTOR_SIZE) count=1 conv=notrunc status=none
 	@dd if=$(KERNEL_BIN) of=$@ bs=$(SECTOR_SIZE) seek=1 conv=notrunc status=none
+
+# USB/raw-disk friendly alias with a .bin extension. This is the bootable
+# artifact; bin/kernel.bin is only the flat kernel payload and cannot boot by
+# itself because it intentionally does not contain the 512-byte boot sector.
+$(BOOTABLE_BIN): $(IMAGE_FILE)
+	@cp $< $@
+	@echo "=> Wrote bootable raw image alias: $@"
 
 $(IMAGE_FILE_64): $(BOOT64_BIN) $(KERNEL64_BIN) check-sizes64
 	@echo "=> Creating 64-bit disk image: $@"
