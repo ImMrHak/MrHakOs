@@ -785,7 +785,8 @@ bool Network::arping(uint32_t targetIp) {
     if (!info.rtl8139Present) return false;
     arpValid = false;
     sendArpRequest(targetIp);
-    for (int i = 0; i < 300000; i++) {
+    uint32_t deadline = timerMillis() + 2000;
+    while (timerMillis() < deadline) {
         poll();
         if (arpValid && rd32(arpIp) == targetIp) return true;
     }
@@ -815,7 +816,8 @@ bool Network::pingOnce(uint32_t targetIp, uint16_t sequence, uint32_t startMs, P
         if (!lookupArp(nextHop, mac)) return false;
     }
     if (!sendIcmpEchoWithTtl(targetIp, mac, 64, sequence)) return false;
-    for (int i = 0; i < 900000; i++) {
+    uint32_t deadline = timerMillis() + 3000;
+    while (timerMillis() < deadline) {
         poll();
         if (echoReplySeen) {
             if (outResult) {
@@ -852,7 +854,8 @@ bool Network::tracerouteHop(uint32_t targetIp, uint8_t ttl, uint16_t sequence, u
         if (!lookupArp(nextHop, mac)) return false;
     }
     if (!sendIcmpEchoWithTtl(targetIp, mac, ttl, sequence)) return false;
-    for (int i = 0; i < 900000; i++) {
+    uint32_t deadline = timerMillis() + 3000;
+    while (timerMillis() < deadline) {
         poll();
         if (echoReplySeen || icmpTimeExceededSeen) {
             if (outResult) {
@@ -944,7 +947,8 @@ bool Network::resolveDnsA(const char* hostname, uint32_t* outIp) {
     if (!sendUdpPacket(info.dnsIp, 5300, 53, query, off)) return false;
     Serial::writeString("[net] DNS query sent\n");
 
-    for (int i = 0; i < 1000000; i++) {
+    uint32_t deadline = timerMillis() + 5000;
+    while (timerMillis() < deadline) {
         poll();
         if (dnsReplySeen) {
             *outIp = lastDnsIp;

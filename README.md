@@ -567,8 +567,8 @@ The `Makefile` is the single source of truth for compilation, linking, and testi
 
 | Target | Description |
 |---|---|
-| `make all32` | Compile and link the 32-bit kernel; produce `bin/mrhakos.img` |
-| `make all64` | Compile and link the 64-bit kernel; produce `bin/mrhakos64.img` |
+| `make all32` | Compile and link the 32-bit kernel; produce bootable `bin/mrhakos.img` and `bin/mrhakos-bootable.bin` |
+| `make all64` | Compile and link the 64-bit kernel; produce bootable `bin/mrhakos64.img` |
 | `make run32` | Build (if needed) + run 32-bit in QEMU, no network |
 | `make run64` | Build (if needed) + run 64-bit in QEMU, no network |
 | `make run32-net` | 32-bit QEMU with RTL8139 NIC + user networking (NAT) |
@@ -673,6 +673,11 @@ brew install nasm qemu llvm
 ```bash
 # 32-bit — build and run
 make clean && make all32 && make run32
+
+# Important output files:
+#   bin/kernel.bin            = raw kernel only, NOT directly bootable
+#   bin/mrhakos.img           = bootable raw floppy/disk image
+#   bin/mrhakos-bootable.bin  = same bootable raw image, .bin extension
 
 # 64-bit — build and run
 make clean && make all64 && make run64
@@ -880,12 +885,23 @@ Reboot and select **MrHakOS 32-bit (Multiboot2)** from the GRUB menu.
 
 ### Bootable USB/ISO
 
+For real USB boot on normal PCs, the safest path is the GRUB ISO:
+
 ```bash
 make grubiso
 # writes bin/mrhakos-grub.iso
 # then use scripts/build_iso_usb.sh or dd manually:
-sudo dd if=bin/mrhakos-grub.iso of=/dev/sdX bs=4M status=progress
+sudo dd if=bin/mrhakos-grub.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
+
+The custom BIOS raw image is also bootable and now has a `.bin` alias if you specifically want a bootable `.bin` file:
+
+```bash
+make all32
+sudo dd if=bin/mrhakos-bootable.bin of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Do not write `bin/kernel.bin` to USB by itself: it is only the kernel payload and intentionally has no `0x55AA` boot-sector signature. Use `bin/mrhakos-grub.iso`, `bin/mrhakos.img`, or `bin/mrhakos-bootable.bin` instead.
 
 Use `scripts/build_iso_usb.sh` for an interactive script with safety checks (verifies you are targeting a whole disk, not a partition, and prompts for confirmation).
 
@@ -974,9 +990,9 @@ An interactive helper for writing `bin/mrhakos-grub.iso` to a USB drive. Include
 - Supports `--yes` to skip the prompt and `--dry-run` to skip the actual `dd`
 
 ```bash
-./scripts/build_iso_usb.sh /dev/sdX          # with confirmation prompt
-./scripts/build_iso_usb.sh /dev/sdX --yes    # no prompt
-./scripts/build_iso_usb.sh /dev/sdX --dry-run
+./scripts/build_iso_usb.sh --device /dev/sdX          # with confirmation prompt
+./scripts/build_iso_usb.sh --device /dev/sdX --yes    # no prompt
+./scripts/build_iso_usb.sh --device /dev/sdX --dry-run
 ```
 
 ---
