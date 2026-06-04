@@ -20,7 +20,10 @@ _start:
     ; Setup a stack in case bootloader didn’t
     mov rsp, 0x9F000
 
-    ; Call kernel_main
+    ; Call kernel_main(0, 0) — BIOS boot, no Multiboot2 info.
+    ; 64-bit SysV ABI: first arg in RDI, second in RSI.
+    xor edi, edi            ; mb_magic = 0
+    xor esi, esi            ; mb_info  = 0
     extern kernel_main
     call kernel_main
 

@@ -177,7 +177,7 @@ run-uefi: iso
 		exit 1; \
 	fi
 	@echo "=> Using OVMF: $(OVMF_FD)"
-	@$(QEMU64) -bios $(OVMF_FD) -cdrom $(GRUB_ISO) -no-reboot -no-shutdown
+	@$(QEMU64) -bios $(OVMF_FD) -cdrom $(GRUB_ISO) -serial stdio -no-reboot -no-shutdown
 
 smoke: smoke32 smoke64
 
@@ -247,7 +247,11 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 		'set default=0' \
 		'' \
 		'menuentry "MrHakOS 32-bit (Multiboot2)" {' \
-		'    set gfxpayload=text' \
+		'    if [ "$$grub_platform" = "efi" ]; then' \
+		'        set gfxpayload=keep' \
+		'    else' \
+		'        set gfxpayload=text' \
+		'    fi' \
 		'    multiboot2 /boot/mrhakos-kernel.elf' \
 		'    boot' \
 		'}' > $(GRUB_ISODIR)/boot/grub/grub.cfg

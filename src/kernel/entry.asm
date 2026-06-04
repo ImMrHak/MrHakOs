@@ -27,18 +27,22 @@ section .text
 
 _start:
 
-    ; Make sure we clear interrupts and set up a basic environment
-    cli                     ; Clear interrupts
-    cld                     ; Clear direction flag for string operations
-    
-    ; Set up a minimal stack in case it wasn't properly initialized
-    mov esp, 0x90000       ; Set up a stack
-    
-    ; Call the kernel main function
+    ; GRUB Multiboot2 puts magic in EAX and info pointer in EBX.
+    ; Save them before touching any registers or the stack.
+    mov edi, eax            ; edi = mb2 magic (0x36D76289 if Multiboot2)
+    mov esi, ebx            ; esi = mb2 info pointer
+
+    cli
+    cld
+    mov esp, 0x90000
+
+    ; Pass (magic, info_ptr) to kernel_main via cdecl stack args (right-to-left).
+    push esi                ; arg2: mb2 info pointer
+    push edi                ; arg1: mb2 magic
     extern kernel_main
     call kernel_main
 
     ; Halt if kernel_main ever returns.
     halt_loop:
         hlt
-        jmp halt_loop      ; Ensure we keep halting if an NMI occurs
+        jmp halt_loop
