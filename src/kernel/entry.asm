@@ -17,19 +17,6 @@ multiboot2_header_start:
     dd 0                                  ; protected-mode i386 architecture
     dd multiboot2_header_end - multiboot2_header_start
     dd -(0xE85250D6 + 0 + (multiboot2_header_end - multiboot2_header_start))
-
-    ; Framebuffer request tag - ask GRUB to keep/provide text mode (type=0)
-    ; This silences the "no console will be available" warning and tells GRUB
-    ; we want VGA text mode (width=80, height=25, depth=0 means text mode)
-    align 8
-    dw 5                                  ; tag type: framebuffer request
-    dw 0                                  ; flags: optional
-    dd 20                                 ; tag size
-    dd 80                                 ; preferred width (columns)
-    dd 25                                 ; preferred height (rows)
-    dd 0                                  ; preferred depth (0 = text mode)
-
-    align 8
     dw 0                                  ; end tag type
     dw 0                                  ; end tag flags
     dd 8                                  ; end tag size

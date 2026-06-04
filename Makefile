@@ -242,7 +242,7 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 		'insmod efi_uga' \
 		'insmod video_bochs' \
 		'insmod video_cirrus' \
-		'terminal_output console' \
+		'set gfxmode=auto' \
 		'set timeout=5' \
 		'set default=0' \
 		'' \
