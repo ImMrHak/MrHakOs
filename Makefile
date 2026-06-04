@@ -96,12 +96,22 @@ X64_OBJS := \
 	$(BUILD_DIR)/isr64.o
 
 INCLUDES := -I$(SRC_DIR)/libc/include
+# Every object depends on all headers (see the catch-all rule below). The
+# explicit per-object rules only list .cpp prerequisites, so without this a
+# header change (e.g. adding a class member) would leave stale objects with a
+# mismatched struct layout -> stack corruption -> black screen. Rebuilds are
+# cheap here, so depend coarsely on all headers rather than tracking each.
+HEADERS := $(wildcard $(SRC_DIR)/libc/include/*.hpp) $(wildcard $(SRC_DIR)/libc/include/*.h)
 COMMON_CXXFLAGS := -ffreestanding -Os -nostdlib -fno-exceptions -fno-rtti -fcheck-new -Wall -Wextra $(INCLUDES)
 CFLAGS   := -ffreestanding -Os -nostdlib -Wall -Wextra $(INCLUDES)
 CXXFLAGS := $(COMMON_CXXFLAGS)
 X64_CXXFLAGS := -target x86_64-elf -D__x86_64__ $(COMMON_CXXFLAGS) -mno-red-zone -mgeneral-regs-only -Wno-new-returns-null
 LDFLAGS  := -T $(SRC_DIR)/kernel/linker.ld -nostdlib
 X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
+
+# Prerequisite-only rule (no recipe): merges $(HEADERS) into every object's
+# prerequisites so any header edit forces a recompile. Prevents stale objects.
+$(OBJS) $(X64_OBJS): $(HEADERS)
 
 .PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
 
