@@ -113,6 +113,12 @@ static const unsigned int vga_palette[16] = {
     0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 };
 
+// RAM mirror of the text grid (character + attribute per cell). In framebuffer
+// mode this is the source of truth so scroll() can repaint with writes only and
+// never read back from slow uncached MMIO. Lives in .bss to keep the
+// stack-allocated Vga object small.
+static unsigned short fb_cells[VGA_HEIGHT][VGA_WIDTH];
+
 enum VgaColor {
     VGA_COLOR_BLACK = 0,
     VGA_COLOR_BLUE = 1,
@@ -152,52 +158,118 @@ void Vga::init_fb(unsigned int addr, unsigned int pitch,
     fb_bpp    = bpp;
     use_fb    = true;
     cursor_enabled = false;   // hardware cursor I/O doesn't apply to framebuffer
+
+    // Magnify the 8x8 font by the largest integer factor that still fits the
+    // whole 80x25 grid on this panel, then center it. This adapts to whatever
+    // resolution the firmware reports instead of rendering tiny in the corner.
+    int sx = (int)(fb_width  / (VGA_WIDTH  * 8));
+    int sy = (int)(fb_height / (VGA_HEIGHT * 8));
+    fb_scale = sx < sy ? sx : sy;
+    if (fb_scale < 1) fb_scale = 1;
+    int grid_w = VGA_WIDTH  * 8 * fb_scale;
+    int grid_h = VGA_HEIGHT * 8 * fb_scale;
+    fb_origin_x = ((int)fb_width  - grid_w) / 2;
+    fb_origin_y = ((int)fb_height - grid_h) / 2;
+    if (fb_origin_x < 0) fb_origin_x = 0;
+    if (fb_origin_y < 0) fb_origin_y = 0;
+
     x = 0; y = 0;
     clear();
 }
 
-// Write one RGB pixel into the linear framebuffer (BGRA byte order).
-void Vga::fb_put_pixel(int px, int py, unsigned int rgb) {
-    if ((unsigned int)px >= fb_width || (unsigned int)py >= fb_height) return;
-    volatile unsigned char* p = fb_base + (unsigned int)py * fb_pitch
-                                + (unsigned int)px * (fb_bpp / 8);
-    unsigned char r = (rgb >> 16) & 0xFF;
-    unsigned char g = (rgb >>  8) & 0xFF;
-    unsigned char b =  rgb        & 0xFF;
-    p[0] = b; p[1] = g; p[2] = r;
-    if (fb_bpp == 32) p[3] = 0;
-}
+// Fill a rectangle with one color. Uses 32-bit stores on the common 32bpp GOP
+// format so the CPU's write-combining buffers coalesce; byte stores for 24bpp.
+void Vga::fb_fill_rect(int px, int py, int w, int h, unsigned int rgb) {
+    if (px < 0) { w += px; px = 0; }
+    if (py < 0) { h += py; py = 0; }
+    if (px + w > (int)fb_width)  w = (int)fb_width  - px;
+    if (py + h > (int)fb_height) h = (int)fb_height - py;
+    if (w <= 0 || h <= 0) return;
 
-// Render one character glyph at text-grid position (col, row).
-void Vga::fb_draw_char(char c, int col, int row) {
-    unsigned int fg_rgb = vga_palette[color & 0x0F];
-    unsigned int bg_rgb = vga_palette[(color >> 4) & 0x0F];
-    int idx = (unsigned char)c >= 0x20 && (unsigned char)c <= 0x7E
-              ? (unsigned char)c - 0x20 : 0;
-    for (int gy = 0; gy < 8; gy++) {
-        unsigned char bits = fb_font[idx][gy];
-        for (int gx = 0; gx < 8; gx++) {
-            bool on = (bits >> (7 - gx)) & 1;
-            fb_put_pixel(col * 8 + gx, row * 8 + gy, on ? fg_rgb : bg_rgb);
+    if (fb_bpp == 32) {
+        for (int yy = 0; yy < h; yy++) {
+            volatile unsigned int* row = (volatile unsigned int*)
+                (fb_base + (unsigned int)(py + yy) * fb_pitch + (unsigned int)px * 4);
+            for (int xx = 0; xx < w; xx++) row[xx] = rgb;
+        }
+    } else {
+        unsigned int bpp = fb_bpp / 8;
+        for (int yy = 0; yy < h; yy++) {
+            volatile unsigned char* row = fb_base + (unsigned int)(py + yy) * fb_pitch
+                                          + (unsigned int)px * bpp;
+            for (int xx = 0; xx < w; xx++) {
+                volatile unsigned char* p = row + (unsigned int)xx * bpp;
+                p[0] = rgb & 0xFF; p[1] = (rgb >> 8) & 0xFF; p[2] = (rgb >> 16) & 0xFF;
+            }
         }
     }
+}
+
+// Render one glyph at text cell (col,row), magnified by fb_scale and centered.
+void Vga::fb_draw_char(char c, int col, int row) {
+    unsigned int fg = vga_palette[color & 0x0F];
+    unsigned int bg = vga_palette[(color >> 4) & 0x0F];
+    int idx = (unsigned char)c >= 0x20 && (unsigned char)c <= 0x7E
+              ? (unsigned char)c - 0x20 : 0;
+    int s   = fb_scale;
+    int px0 = fb_origin_x + col * 8 * s;
+    int py0 = fb_origin_y + row * 8 * s;
+
+    if (fb_bpp == 32) {
+        for (int gy = 0; gy < 8; gy++) {
+            unsigned char bits = fb_font[idx][gy];
+            for (int syi = 0; syi < s; syi++) {
+                int yy = py0 + gy * s + syi;
+                if ((unsigned int)yy >= fb_height) continue;
+                volatile unsigned int* line = (volatile unsigned int*)
+                    (fb_base + (unsigned int)yy * fb_pitch + (unsigned int)px0 * 4);
+                int o = 0;
+                for (int gx = 0; gx < 8; gx++) {
+                    unsigned int rgb = ((bits >> (7 - gx)) & 1) ? fg : bg;
+                    for (int sxi = 0; sxi < s; sxi++) line[o++] = rgb;
+                }
+            }
+        }
+    } else {
+        for (int gy = 0; gy < 8; gy++) {
+            unsigned char bits = fb_font[idx][gy];
+            for (int gx = 0; gx < 8; gx++) {
+                unsigned int rgb = ((bits >> (7 - gx)) & 1) ? fg : bg;
+                fb_fill_rect(px0 + gx * s, py0 + gy * s, s, s, rgb);
+            }
+        }
+    }
+}
+
+// Repaint the whole grid from the RAM mirror: one background fill, then only the
+// non-blank glyphs. Writes only, so scroll() never reads back from slow MMIO.
+void Vga::fb_render_all() {
+    int savedColor = color;
+    unsigned int bg = vga_palette[(savedColor >> 4) & 0x0F];
+    fb_fill_rect(fb_origin_x, fb_origin_y,
+                 VGA_WIDTH * 8 * fb_scale, VGA_HEIGHT * 8 * fb_scale, bg);
+    for (int r = 0; r < VGA_HEIGHT; r++) {
+        for (int cI = 0; cI < VGA_WIDTH; cI++) {
+            unsigned short cell = fb_cells[r][cI];
+            char ch = (char)(cell & 0xFF);
+            if (ch == ' ' || ch == 0) continue;   // background already painted
+            color = (cell >> 8) & 0xFF;
+            fb_draw_char(ch, cI, r);
+        }
+    }
+    color = savedColor;
 }
 
 // Clear the screen
 void Vga::clear() {
     if (use_fb) {
-        unsigned int bg_rgb = vga_palette[(color >> 4) & 0x0F];
-        unsigned int bpp = fb_bpp / 8;
-        for (unsigned int py = 0; py < fb_height; py++) {
-            volatile unsigned char* row_ptr = fb_base + py * fb_pitch;
-            for (unsigned int px = 0; px < fb_width; px++) {
-                volatile unsigned char* p = row_ptr + px * bpp;
-                p[0] = bg_rgb & 0xFF;
-                p[1] = (bg_rgb >> 8) & 0xFF;
-                p[2] = (bg_rgb >> 16) & 0xFF;
-                if (fb_bpp == 32) p[3] = 0;
-            }
-        }
+        unsigned short blank = (unsigned short)(' ' | (color << 8));
+        for (int r = 0; r < VGA_HEIGHT; r++)
+            for (int cI = 0; cI < VGA_WIDTH; cI++)
+                fb_cells[r][cI] = blank;
+        // Paint the entire panel (including the centering margins) in one pass.
+        fb_fill_rect(0, 0, (int)fb_width, (int)fb_height,
+                     vga_palette[(color >> 4) & 0x0F]);
         x = 0; y = 0;
         return;
     }
@@ -222,6 +294,7 @@ void Vga::putChar(char c) {
     if (y >= VGA_HEIGHT) scroll();
 
     if (use_fb) {
+        fb_cells[y][x] = (unsigned short)(c | (color << 8));
         fb_draw_char(c, x, y);
     } else {
         vga_buffer[y * VGA_WIDTH + x] = (unsigned short)(c | (color << 8));
@@ -239,6 +312,7 @@ void Vga::putCharAt(char c, int px, int py) {
     if (py >= VGA_HEIGHT) py = VGA_HEIGHT - 1;
 
     if (use_fb) {
+        fb_cells[py][px] = (unsigned short)(c | (color << 8));
         fb_draw_char(c, px, py);
     } else {
         vga_buffer[py * VGA_WIDTH + px] = (unsigned short)(c | (color << 8));
@@ -269,26 +343,16 @@ void Vga::set_xy(int new_x, int new_y) {
 // Scroll the screen up one line
 void Vga::scroll() {
     if (use_fb) {
-        // Move all pixel rows up by one character height (8 px)
-        unsigned int src_off = 8u * fb_pitch;
-        unsigned int move_bytes = (unsigned int)(VGA_HEIGHT - 1) * 8u * fb_pitch;
-        volatile unsigned char* dst = fb_base;
-        volatile unsigned char* src = fb_base + src_off;
-        for (unsigned int i = 0; i < move_bytes; i++) dst[i] = src[i];
-        // Clear bottom character row
-        unsigned int bg_rgb = vga_palette[(color >> 4) & 0x0F];
-        unsigned int bpp = fb_bpp / 8;
-        volatile unsigned char* last = fb_base + (unsigned int)(VGA_HEIGHT - 1) * 8u * fb_pitch;
-        for (unsigned int py = 0; py < 8u; py++) {
-            volatile unsigned char* row_ptr = last + py * fb_pitch;
-            for (unsigned int px = 0; px < fb_width; px++) {
-                volatile unsigned char* p = row_ptr + px * bpp;
-                p[0] = bg_rgb & 0xFF;
-                p[1] = (bg_rgb >> 8) & 0xFF;
-                p[2] = (bg_rgb >> 16) & 0xFF;
-                if (fb_bpp == 32) p[3] = 0;
-            }
-        }
+        // Shift the RAM grid up one row, blank the last row, then repaint from
+        // the grid. This avoids reading back from the framebuffer, which is the
+        // operation that made scrolling crawl on real hardware.
+        for (int r = 0; r < VGA_HEIGHT - 1; r++)
+            for (int cI = 0; cI < VGA_WIDTH; cI++)
+                fb_cells[r][cI] = fb_cells[r + 1][cI];
+        unsigned short blank = (unsigned short)(' ' | (color << 8));
+        for (int cI = 0; cI < VGA_WIDTH; cI++)
+            fb_cells[VGA_HEIGHT - 1][cI] = blank;
+        fb_render_all();
         x = 0; y = VGA_HEIGHT - 1;
         return;
     }
