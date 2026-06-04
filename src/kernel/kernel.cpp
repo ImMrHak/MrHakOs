@@ -8,12 +8,15 @@
 #include <filesystem.hpp>
 #include <serial.hpp>
 #include <network.hpp>
+#include <memory.hpp>
 
 static Network kernelNetwork;
 
 extern "C" void kernel_main() {
     Serial::init();
     Serial::writeString("[kernel] MrHakOS booting\n");
+    initKernelMemoryProtection();
+    Serial::writeString("[kernel] memory protection initialized\n");
 
     Vga vga;
     Serial::writeString("[kernel] vga object ready\n");

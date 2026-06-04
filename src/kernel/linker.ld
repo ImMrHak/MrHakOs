@@ -24,28 +24,36 @@ SECTIONS {
     } :text
 
     . = ALIGN(16);
+    __text_start = .;
     .text : {
         *(.text*)
     } :text
+    __text_end = .;
 
     . = ALIGN(16);
+    __rodata_start = .;
     .rodata : {
         *(.rodata*)
         *(.eh_frame*)
     } :rodata
+    __rodata_end = .;
 
     . = ALIGN(16);
+    __data_start = .;
     .data : {
         *(.data*)
         *(.got*)
         *(.got.plt*)
     } :data
+    __data_end = .;
 
     . = ALIGN(16);
+    __bss_start = .;
     .bss : {
         *(COMMON)
         *(.bss*)
     } :data
+    __bss_end = .;
 
     /DISCARD/ : {
         *(.note*)

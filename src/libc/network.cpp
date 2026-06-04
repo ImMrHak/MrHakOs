@@ -1170,7 +1170,8 @@ bool Network::sendTcpText(uint32_t targetIp, uint16_t destPort, const char* text
 
     if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, 0, 0x02, 0, 0)) return false;
     Serial::writeString("[net] TCP SYN sent\n");
-    for (int i = 0; i < 1200000; i++) {
+    uint32_t synDeadline = timerMillis() + 5000;
+    while (timerMillis() < synDeadline) {
         poll();
         if (tcpRstSeen) return false;
         if (tcpSynAckSeen) break;
@@ -1189,10 +1190,9 @@ bool Network::sendTcpText(uint32_t targetIp, uint16_t destPort, const char* text
     return true;
 }
 
-bool Network::tcpRequestText(uint32_t targetIp, uint16_t destPort, const char* text, char* outResponse, uint16_t outLen) {
-    if (!text || !info.rtl8139Present) return false;
-    uint16_t textLen = 0;
-    while (text[textLen] && textLen < 256) textLen++;
+bool Network::tcpRequestRaw(uint32_t targetIp, uint16_t destPort, const uint8_t* data, uint16_t dataLen, uint8_t* outResponse, uint16_t outCap, uint16_t* outLen) {
+    if ((!data && dataLen != 0) || dataLen > 1024 || !info.rtl8139Present) return false;
+    if (outLen) *outLen = 0;
 
     lastTcpRemoteIp = targetIp;
     lastTcpDestPort = destPort;
@@ -1208,7 +1208,8 @@ bool Network::tcpRequestText(uint32_t targetIp, uint16_t destPort, const char* t
 
     if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, 0, 0x02, 0, 0)) return false;
     Serial::writeString("[net] TCP SYN sent\n");
-    for (int i = 0; i < 1200000; i++) {
+    uint32_t synDeadline = timerMillis() + 5000;
+    while (timerMillis() < synDeadline) {
         poll();
         if (tcpRstSeen) return false;
         if (tcpSynAckSeen) break;
@@ -1217,28 +1218,45 @@ bool Network::tcpRequestText(uint32_t targetIp, uint16_t destPort, const char* t
 
     if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, lastTcpAck, 0x10, 0, 0)) return false;
     Serial::writeString("[net] TCP ACK sent\n");
-    if (textLen) {
-        if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, lastTcpAck, 0x18, reinterpret_cast<const uint8_t*>(text), textLen)) return false;
-        lastTcpSeq += textLen;
-        Serial::writeString("[net] TCP text sent\n");
+    if (dataLen) {
+        if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, lastTcpAck, 0x18, data, dataLen)) return false;
+        lastTcpSeq += dataLen;
+        Serial::writeString("[net] TCP data sent\n");
     }
 
-    for (int i = 0; i < 2500000; i++) {
+    uint32_t dataDeadline = timerMillis() + 8000;
+    while (timerMillis() < dataDeadline) {
         poll();
         if (tcpRstSeen) break;
         if (tcpFinSeen) break;
         if (tcpDataSeen && tcpRxLen >= sizeof(tcpRxBuffer) - 1) break;
     }
 
-    if (outResponse && outLen > 0) {
+    if (outResponse && outCap > 0) {
         uint16_t copyLen = tcpRxLen;
-        if (copyLen > outLen - 1) copyLen = static_cast<uint16_t>(outLen - 1);
-        for (uint16_t i = 0; i < copyLen; i++) outResponse[i] = tcpRxBuffer[i];
-        outResponse[copyLen] = 0;
+        if (copyLen > outCap) copyLen = outCap;
+        for (uint16_t i = 0; i < copyLen; i++) outResponse[i] = static_cast<uint8_t>(tcpRxBuffer[i]);
+        if (outLen) *outLen = copyLen;
+    } else if (outLen) {
+        *outLen = tcpRxLen;
     }
     if (!tcpFinSeen) {
         sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, lastTcpAck, 0x11, 0, 0);
         Serial::writeString("[net] TCP FIN sent\n");
     }
     return tcpSynAckSeen && !tcpRstSeen;
+}
+
+bool Network::tcpRequestText(uint32_t targetIp, uint16_t destPort, const char* text, char* outResponse, uint16_t outLen) {
+    if (!text || !info.rtl8139Present) return false;
+    uint16_t textLen = 0;
+    while (text[textLen] && textLen < 1024) textLen++;
+    uint16_t rawLen = 0;
+    bool ok = tcpRequestRaw(targetIp, destPort, reinterpret_cast<const uint8_t*>(text), textLen, reinterpret_cast<uint8_t*>(outResponse), outLen > 0 ? static_cast<uint16_t>(outLen - 1) : 0, &rawLen);
+    if (outResponse && outLen > 0) {
+        uint16_t nul = rawLen;
+        if (nul > outLen - 1) nul = static_cast<uint16_t>(outLen - 1);
+        outResponse[nul] = 0;
+    }
+    return ok;
 }

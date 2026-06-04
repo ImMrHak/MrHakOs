@@ -2,6 +2,7 @@
 #include <string.hpp>
 #include <interrupts.hpp>
 #include <serial.hpp>
+#include <memory.hpp>
 
 static const char* TERMINAL_HEX = "0123456789ABCDEF";
 
@@ -44,6 +45,326 @@ static void u32ToHex(uint32_t value, char* out, int outLen) {
     out[10] = '\0';
 }
 
+static bool textContains(const char* haystack, const char* needle) {
+    if (!haystack || !needle || needle[0] == '\0') {
+        return false;
+    }
+    for (int i = 0; haystack[i]; i++) {
+        int j = 0;
+        while (needle[j] && haystack[i + j] == needle[j]) {
+            j++;
+        }
+        if (needle[j] == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct TorConsensusSummary {
+    uint32_t relays;
+    uint32_t guards;
+    uint32_t exits;
+    uint32_t fast;
+    uint32_t stable;
+    uint32_t running;
+    uint32_t valid;
+    uint32_t usableGuards;
+    char selectedNickname[32];
+    char selectedIp[16];
+    uint32_t selectedOrPort;
+    bool selectedFast;
+    bool selectedStable;
+    bool selectedRunning;
+    bool selectedValid;
+    bool selectedExit;
+};
+
+struct TorRelayCandidate {
+    char nickname[32];
+    char ip[16];
+    uint32_t orPort;
+};
+
+static bool lineStartsWith(const char* line, const char* prefix) {
+    if (!line || !prefix) return false;
+    for (int i = 0; prefix[i]; i++) {
+        if (line[i] != prefix[i]) return false;
+    }
+    return true;
+}
+
+static bool flagInLine(const char* line, const char* end, const char* flag) {
+    if (!line || !end || !flag) return false;
+    const char* p = line;
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t')) p++;
+        const char* start = p;
+        int k = 0;
+        while (p < end && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+            if (flag[k] && *p == flag[k]) k++;
+            else k = -1000;
+            p++;
+        }
+        if (k >= 0 && flag[k] == '\0' && start < p) return true;
+    }
+    return false;
+}
+
+static const char* skipField(const char* p, const char* end) {
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    while (p < end && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') p++;
+    return p;
+}
+
+static const char* copyField(const char* p, const char* end, char* out, int outLen) {
+    if (!out || outLen <= 0) return p;
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    int o = 0;
+    while (p < end && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+        if (o < outLen - 1) out[o++] = *p;
+        p++;
+    }
+    out[o] = '\0';
+    return p;
+}
+
+static const char* parseU32Field(const char* p, const char* end, uint32_t* out) {
+    while (p < end && (*p == ' ' || *p == '\t')) p++;
+    uint32_t value = 0;
+    bool any = false;
+    while (p < end && *p >= '0' && *p <= '9') {
+        any = true;
+        value = value * 10u + static_cast<uint32_t>(*p - '0');
+        p++;
+    }
+    if (out) *out = any ? value : 0;
+    while (p < end && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') p++;
+    return p;
+}
+
+static bool parseTorRLine(const char* line, const char* end, TorRelayCandidate* out) {
+    if (!lineStartsWith(line, "r ") || !out) return false;
+    out->nickname[0] = '\0';
+    out->ip[0] = '\0';
+    out->orPort = 0;
+    const char* p = line + 2;
+    p = copyField(p, end, out->nickname, sizeof(out->nickname));
+    // identity, digest, publication date, publication time
+    p = skipField(p, end);
+    p = skipField(p, end);
+    p = skipField(p, end);
+    p = skipField(p, end);
+    p = copyField(p, end, out->ip, sizeof(out->ip));
+    p = parseU32Field(p, end, &out->orPort);
+    return out->nickname[0] != '\0' && out->ip[0] != '\0' && out->orPort != 0;
+}
+
+static void clearTorConsensusSummary(TorConsensusSummary* s) {
+    if (!s) return;
+    s->relays = 0;
+    s->guards = 0;
+    s->exits = 0;
+    s->fast = 0;
+    s->stable = 0;
+    s->running = 0;
+    s->valid = 0;
+    s->usableGuards = 0;
+    s->selectedNickname[0] = '\0';
+    s->selectedIp[0] = '\0';
+    s->selectedOrPort = 0;
+    s->selectedFast = false;
+    s->selectedStable = false;
+    s->selectedRunning = false;
+    s->selectedValid = false;
+    s->selectedExit = false;
+}
+
+static void parseTorConsensus(const char* text, TorConsensusSummary* summary) {
+    clearTorConsensusSummary(summary);
+    if (!text || !summary) return;
+
+    TorRelayCandidate pending;
+    pending.nickname[0] = '\0';
+    pending.ip[0] = '\0';
+    pending.orPort = 0;
+    bool havePending = false;
+
+    const char* line = text;
+    while (*line) {
+        const char* end = line;
+        while (*end && *end != '\n' && *end != '\r') end++;
+
+        if (lineStartsWith(line, "r ")) {
+            if (parseTorRLine(line, end, &pending)) {
+                summary->relays++;
+                havePending = true;
+            } else {
+                havePending = false;
+            }
+        } else if (lineStartsWith(line, "s ")) {
+            bool hasGuard = flagInLine(line + 2, end, "Guard");
+            bool hasExit = flagInLine(line + 2, end, "Exit");
+            bool hasFast = flagInLine(line + 2, end, "Fast");
+            bool hasStable = flagInLine(line + 2, end, "Stable");
+            bool hasRunning = flagInLine(line + 2, end, "Running");
+            bool hasValid = flagInLine(line + 2, end, "Valid");
+            if (hasGuard) summary->guards++;
+            if (hasExit) summary->exits++;
+            if (hasFast) summary->fast++;
+            if (hasStable) summary->stable++;
+            if (hasRunning) summary->running++;
+            if (hasValid) summary->valid++;
+            bool usable = havePending && hasGuard && hasFast && hasStable && hasRunning && hasValid;
+            if (usable) {
+                summary->usableGuards++;
+                if (summary->selectedNickname[0] == '\0') {
+                    int i = 0;
+                    for (; pending.nickname[i] && i < 31; i++) summary->selectedNickname[i] = pending.nickname[i];
+                    summary->selectedNickname[i] = '\0';
+                    i = 0;
+                    for (; pending.ip[i] && i < 15; i++) summary->selectedIp[i] = pending.ip[i];
+                    summary->selectedIp[i] = '\0';
+                    summary->selectedOrPort = pending.orPort;
+                    summary->selectedFast = hasFast;
+                    summary->selectedStable = hasStable;
+                    summary->selectedRunning = hasRunning;
+                    summary->selectedValid = hasValid;
+                    summary->selectedExit = hasExit;
+                }
+            }
+        }
+
+        line = end;
+        while (*line == '\n' || *line == '\r') line++;
+    }
+}
+
+static const uint8_t TOR_TLS_CLIENT_HELLO[] = {
+    // TLS record: Handshake, TLS 1.0 record version, 0x0059 bytes
+    0x16, 0x03, 0x01, 0x00, 0x59,
+    // Handshake: ClientHello, 0x000055 bytes
+    0x01, 0x00, 0x00, 0x55,
+    // client_version TLS 1.2
+    0x03, 0x03,
+    // deterministic bring-up random; not cryptographically safe yet
+    0x4d, 0x72, 0x48, 0x61, 0x6b, 0x4f, 0x53, 0x2d,
+    0x54, 0x6f, 0x72, 0x2d, 0x54, 0x4c, 0x53, 0x31,
+    0x32, 0x2d, 0x70, 0x72, 0x6f, 0x62, 0x65, 0x2d,
+    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31,
+    // session_id length
+    0x00,
+    // cipher_suites length = 12 bytes
+    0x00, 0x0c,
+    0xc0, 0x2f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    0xc0, 0x30, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    0xc0, 0x13, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+    0xc0, 0x14, // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+    0x00, 0x2f, // TLS_RSA_WITH_AES_128_CBC_SHA
+    0x00, 0x35, // TLS_RSA_WITH_AES_256_CBC_SHA
+    // compression_methods: null
+    0x01, 0x00,
+    // extensions length = 29 bytes
+    0x00, 0x1d,
+    // supported_groups: secp256r1, secp384r1, x25519
+    0x00, 0x0a, 0x00, 0x08, 0x00, 0x06, 0x00, 0x17, 0x00, 0x18, 0x00, 0x1d,
+    // ec_point_formats: uncompressed
+    0x00, 0x0b, 0x00, 0x02, 0x01, 0x00,
+    // signature_algorithms: rsa_pkcs1_sha256, rsa_pkcs1_sha384, rsa_pkcs1_sha512
+    0x00, 0x0d, 0x00, 0x08, 0x00, 0x06, 0x04, 0x01, 0x05, 0x01, 0x06, 0x01
+};
+
+static void byteToHex(uint8_t value, char* out) {
+    out[0] = TERMINAL_HEX[(value >> 4) & 0x0f];
+    out[1] = TERMINAL_HEX[value & 0x0f];
+    out[2] = '\0';
+}
+
+struct TlsParsedRecord {
+    bool validRecord;
+    bool isHandshake;
+    bool isAlert;
+    uint8_t recordType;
+    uint8_t major;
+    uint8_t minor;
+    uint16_t recordLen;
+    uint8_t handshakeType;
+    uint32_t handshakeLen;
+    uint8_t alertLevel;
+    uint8_t alertDescription;
+};
+
+static void clearTlsParsedRecord(TlsParsedRecord* rec) {
+    if (!rec) return;
+    rec->validRecord = false;
+    rec->isHandshake = false;
+    rec->isAlert = false;
+    rec->recordType = 0;
+    rec->major = 0;
+    rec->minor = 0;
+    rec->recordLen = 0;
+    rec->handshakeType = 0;
+    rec->handshakeLen = 0;
+    rec->alertLevel = 0;
+    rec->alertDescription = 0;
+}
+
+static bool parseTlsRecord(const uint8_t* data, uint16_t len, TlsParsedRecord* rec) {
+    clearTlsParsedRecord(rec);
+    if (!data || !rec || len < 5) return false;
+    rec->recordType = data[0];
+    rec->major = data[1];
+    rec->minor = data[2];
+    rec->recordLen = static_cast<uint16_t>((static_cast<uint16_t>(data[3]) << 8) | data[4]);
+    rec->validRecord = (rec->major == 0x03) &&
+        (rec->recordType == 0x16 || rec->recordType == 0x15 || rec->recordType == 0x14 || rec->recordType == 0x17) &&
+        (rec->recordLen <= 16384 + 2048);
+    if (!rec->validRecord) return false;
+    if (rec->recordType == 0x16 && len >= 9) {
+        rec->isHandshake = true;
+        rec->handshakeType = data[5];
+        rec->handshakeLen = (static_cast<uint32_t>(data[6]) << 16) |
+            (static_cast<uint32_t>(data[7]) << 8) | static_cast<uint32_t>(data[8]);
+    } else if (rec->recordType == 0x15 && len >= 7) {
+        rec->isAlert = true;
+        rec->alertLevel = data[5];
+        rec->alertDescription = data[6];
+    }
+    return true;
+}
+
+static const char* tlsRecordTypeName(uint8_t t) {
+    if (t == 0x14) return "ChangeCipherSpec";
+    if (t == 0x15) return "Alert";
+    if (t == 0x16) return "Handshake";
+    if (t == 0x17) return "ApplicationData";
+    return "Unknown";
+}
+
+static const char* tlsHandshakeTypeName(uint8_t t) {
+    if (t == 0x01) return "ClientHello";
+    if (t == 0x02) return "ServerHello";
+    if (t == 0x0b) return "Certificate";
+    if (t == 0x0c) return "ServerKeyExchange";
+    if (t == 0x0d) return "CertificateRequest";
+    if (t == 0x0e) return "ServerHelloDone";
+    if (t == 0x10) return "ClientKeyExchange";
+    if (t == 0x14) return "Finished";
+    return "Unknown";
+}
+
+static const char* tlsAlertDescriptionName(uint8_t d) {
+    if (d == 0) return "close_notify";
+    if (d == 10) return "unexpected_message";
+    if (d == 40) return "handshake_failure";
+    if (d == 47) return "illegal_parameter";
+    if (d == 70) return "protocol_version";
+    if (d == 80) return "internal_error";
+    if (d == 109) return "missing_extension";
+    if (d == 112) return "unrecognized_name";
+    return "unknown";
+}
+
 
 // Global terminal instance for keyboard handler
 Terminal* g_terminal = nullptr;
@@ -64,6 +385,35 @@ Terminal::Terminal() {
     commandReady = false;
     network = nullptr;
     lastDhcpState = 0;
+    torDirectoryReachable = false;
+    torCircuitsReady = false;
+    torTlsReady = false;
+    torTlsHandshakeSeen = false;
+    torTlsRxLen = 0;
+    torTlsRecordType = 0;
+    torTlsMajor = 0;
+    torTlsMinor = 0;
+    torTlsRecordLen = 0;
+    torTlsHandshakeType = 0;
+    torTlsHandshakeLen = 0;
+    torTlsAlertLevel = 0;
+    torTlsAlertDescription = 0;
+    torRelayCount = 0;
+    torGuardCount = 0;
+    torExitCount = 0;
+    torFastCount = 0;
+    torStableCount = 0;
+    torRunningCount = 0;
+    torValidCount = 0;
+    torUsableGuardCount = 0;
+    torSelectedNickname[0] = '\0';
+    torSelectedIp[0] = '\0';
+    torSelectedOrPort = 0;
+    torSelectedHasFast = false;
+    torSelectedHasStable = false;
+    torSelectedHasRunning = false;
+    torSelectedHasValid = false;
+    torSelectedHasExit = false;
 
     // Initialize input buffer without relying on hosted-library memset.
     volatile char* buf = inputBuffer;
@@ -240,6 +590,7 @@ void Terminal::processCommand(const char* cmd) {
         putString("  help    - Show this help message\n");
         putString("  mrhakos - Show MrHakOs information\n");
         putString("  kbd     - Show keyboard IRQ/poll counters for USB legacy debugging\n");
+        putString("  meminfo - Show RAM-only memory protection status\n");
         putString("  mkdir   - Create a new directory\n");
         putString("  ls      - List files and directories\n");
         putString("  cd      - Change current directory\n");
@@ -259,6 +610,9 @@ void Terminal::processCommand(const char* cmd) {
         putString("  dns     - Resolve a hostname with QEMU DNS, example: dns example.com\n");
         putString("  tcp     - Send TCP text, example: tcp 10.0.2.2 8080 hello\n");
         putString("  http    - Fetch / over TCP port 80, example: http example.com\n");
+        putString("  curl    - HTTP client: curl [-X METHOD] http://host[:port]/path [body]\n");
+        putString("            Methods: GET POST PUT PATCH DELETE HEAD OPTIONS TRACE CONNECT\n");
+        putString("  tor     - Tor control: status | bootstrap | consensus | tls | circuit\n");
         putString("  securechat - Onion-only secure chat control, example: securechat status\n");
     } else if (strcmp(command, "mrhakos") == 0) {
         putString("\n");
@@ -278,6 +632,8 @@ void Terminal::processCommand(const char* cmd) {
         putString(value);
         putString("\n");
         putString("If a USB keyboard works here, firmware USB Legacy Support is translating it.\n");
+    } else if (strcmp(command, "meminfo") == 0 || strcmp(command, "memory") == 0) {
+        cmdMeminfo(args);
     } else if (strcmp(command, "mkdir") == 0) {
         cmdMkdir(args);
     } else if (strcmp(command, "ls") == 0) {
@@ -314,6 +670,10 @@ void Terminal::processCommand(const char* cmd) {
         cmdTcp(args);
     } else if (strcmp(command, "http") == 0) {
         cmdHttp(args);
+    } else if (strcmp(command, "curl") == 0) {
+        cmdCurl(args);
+    } else if (strcmp(command, "tor") == 0) {
+        cmdTor(args);
     } else if (strcmp(command, "securechat") == 0) {
         cmdSecureChat(args);
     } else if (strcmp(command, "") == 0){
@@ -337,6 +697,26 @@ void Terminal::onKeypress() {
 }
 
 // Command handler methods
+void Terminal::cmdMeminfo(const char* args) {
+    (void)args;
+    const KernelMemoryStatus& mem = getKernelMemoryStatus();
+    static char hex[16];
+    putString("\nMemory protection / RAM-only status\n");
+    putString("  Storage policy: RAM-only tmpfs-style filesystem; no disk persistence by default\n");
+    putString("  Paging: "); putString(mem.pagingActive ? "active\n" : "not active in this build path\n");
+    putString("  CR0.WP supervisor write-protect: "); putString(mem.writeProtectEnabled ? "enabled\n" : "not enabled\n");
+    putString("  NX support: "); putString(mem.nxSupported ? "yes\n" : "no/unknown\n");
+    putString("  NX enabled: "); putString(mem.nxEnabled ? "yes\n" : "no\n");
+    putString("  Kernel W^X policy: "); putString(mem.kernelWxProtected ? "installed\n" : "not installed yet\n");
+    u32ToHex(static_cast<uint32_t>(mem.textStart), hex, sizeof(hex)); putString("  text:   "); putString(hex); putString("-");
+    u32ToHex(static_cast<uint32_t>(mem.textEnd), hex, sizeof(hex)); putString(hex); putString(" RX\n");
+    u32ToHex(static_cast<uint32_t>(mem.rodataStart), hex, sizeof(hex)); putString("  rodata: "); putString(hex); putString("-");
+    u32ToHex(static_cast<uint32_t>(mem.rodataEnd), hex, sizeof(hex)); putString(hex); putString(" R/NX\n");
+    u32ToHex(static_cast<uint32_t>(mem.dataStart), hex, sizeof(hex)); putString("  data:   "); putString(hex); putString("-");
+    u32ToHex(static_cast<uint32_t>(mem.bssEnd), hex, sizeof(hex)); putString(hex); putString(" RW/NX\n");
+    putString("  Next memory milestones: physical page allocator, kmalloc/kfree heap, user/kernel isolation\n");
+}
+
 void Terminal::cmdMkdir(const char* args) {
     if (args[0] == '\0') {
         putString("\nError: mkdir requires a directory name\n");
@@ -1001,6 +1381,418 @@ void Terminal::cmdHttp(const char* args) {
     else putString("Connected, but no HTTP data received\n");
 }
 
+
+static bool curlIsMethodChar(char c) {
+    return (c >= 'A' && c <= 'Z') || c == '-';
+}
+
+static bool curlMethodAllowed(const char* m) {
+    return strcmp(m, "GET") == 0 || strcmp(m, "POST") == 0 || strcmp(m, "PUT") == 0 ||
+           strcmp(m, "PATCH") == 0 || strcmp(m, "DELETE") == 0 || strcmp(m, "HEAD") == 0 ||
+           strcmp(m, "OPTIONS") == 0 || strcmp(m, "TRACE") == 0 || strcmp(m, "CONNECT") == 0;
+}
+
+static void appendStr(char* out, int* pos, int cap, const char* text) {
+    if (!out || !pos || cap <= 0 || !text) return;
+    while (*text && *pos < cap - 1) out[(*pos)++] = *text++;
+    out[*pos] = '\0';
+}
+
+static void appendDec(char* out, int* pos, int cap, uint32_t value) {
+    char tmp[16];
+    u32ToDec(value, tmp, sizeof(tmp));
+    appendStr(out, pos, cap, tmp);
+}
+
+void Terminal::cmdCurl(const char* args) {
+    putString("\nMrHakOS curl HTTP client\n");
+    putString("  Transport: direct HTTP over TCP only; HTTPS/TLS URL fetch is not implemented yet\n");
+    if (!network) { putString("  Network subsystem unavailable\n"); return; }
+    const NetworkInfo& info = network->getInfo();
+    if (!info.rtl8139Present || !info.rxEnabled) { putString("  Network: blocked; Ethernet is not online\n"); return; }
+    if (info.ipAddress == 0 || info.gatewayIp == 0) { putString("  Network: blocked; run dhcp first\n"); return; }
+
+    static char method[12];
+    static char url[128];
+    static char body[256];
+    static char host[64];
+    static char path[96];
+    static char req[1024];
+    static char resp[2048];
+    method[0] = 'G'; method[1] = 'E'; method[2] = 'T'; method[3] = '\0';
+    url[0] = '\0'; body[0] = '\0'; host[0] = '\0'; path[0] = '/'; path[1] = '\0';
+
+    int i = 0;
+    while (args[i] == ' ') i++;
+    if (args[i] == '\0') {
+        putString("  Usage:\n");
+        putString("    curl http://host[:port]/path\n");
+        putString("    curl -X POST http://host/path body\n");
+        putString("    curl POST http://host/path body\n");
+        putString("  Methods: GET POST PUT PATCH DELETE HEAD OPTIONS TRACE CONNECT\n");
+        return;
+    }
+
+    if (args[i] == '-' && args[i+1] == 'X') {
+        i += 2;
+        while (args[i] == ' ') i++;
+        int m = 0;
+        while (curlIsMethodChar(args[i]) && m < 11) method[m++] = args[i++];
+        method[m] = '\0';
+        while (args[i] == ' ') i++;
+    } else {
+        int save = i;
+        static char first[12];
+        int f = 0;
+        while (curlIsMethodChar(args[i]) && f < 11) first[f++] = args[i++];
+        first[f] = '\0';
+        if (curlMethodAllowed(first) && args[i] == ' ') {
+            int m = 0; while (first[m]) { method[m] = first[m]; m++; } method[m] = '\0';
+            while (args[i] == ' ') i++;
+        } else {
+            i = save;
+        }
+    }
+    if (!curlMethodAllowed(method)) { putString("  Unsupported method. Supported: GET POST PUT PATCH DELETE HEAD OPTIONS TRACE CONNECT\n"); return; }
+
+    int u = 0;
+    while (args[i] != ' ' && args[i] != '\0' && u < 127) url[u++] = args[i++];
+    url[u] = '\0';
+    while (args[i] == ' ') i++;
+    int b = 0;
+    while (args[i] != '\0' && b < 255) body[b++] = args[i++];
+    body[b] = '\0';
+    if (url[0] == '\0') { putString("  URL missing\n"); return; }
+
+    const char* purl = url;
+    if (lineStartsWith(purl, "http://")) purl += 7;
+    else if (lineStartsWith(purl, "https://")) { putString("  HTTPS URL blocked: kernel TLS fetch is not implemented yet\n"); return; }
+
+    int h = 0;
+    uint32_t port = 80;
+    while (*purl && *purl != '/' && *purl != ':' && h < 63) host[h++] = *purl++;
+    host[h] = '\0';
+    if (*purl == ':') {
+        purl++;
+        port = 0;
+        while (*purl >= '0' && *purl <= '9') { port = port * 10u + static_cast<uint32_t>(*purl - '0'); purl++; }
+        if (port == 0 || port > 65535) { putString("  Invalid port\n"); return; }
+    }
+    if (*purl == '/') {
+        int pp = 0;
+        while (*purl && pp < 95) path[pp++] = *purl++;
+        path[pp] = '\0';
+    }
+    if (host[0] == '\0') { putString("  Host missing\n"); return; }
+
+    uint32_t ip = 0;
+    if (!network->parseIp(host, &ip)) {
+        putString("  Resolving "); putString(host); putString("...\n");
+        if (!network->resolveDnsA(host, &ip)) { putString("  DNS lookup failed\n"); return; }
+    }
+
+    int r = 0;
+    appendStr(req, &r, sizeof(req), method);
+    appendStr(req, &r, sizeof(req), " ");
+    if (strcmp(method, "CONNECT") == 0) {
+        appendStr(req, &r, sizeof(req), host);
+        appendStr(req, &r, sizeof(req), ":");
+        appendDec(req, &r, sizeof(req), port);
+    } else {
+        appendStr(req, &r, sizeof(req), path);
+    }
+    appendStr(req, &r, sizeof(req), " HTTP/1.0\r\nHost: ");
+    appendStr(req, &r, sizeof(req), host);
+    appendStr(req, &r, sizeof(req), "\r\nUser-Agent: MrHakOS-curl/0.1\r\nConnection: close\r\n");
+    if (body[0] && (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0 || strcmp(method, "DELETE") == 0)) {
+        appendStr(req, &r, sizeof(req), "Content-Type: text/plain\r\nContent-Length: ");
+        appendDec(req, &r, sizeof(req), static_cast<uint32_t>(b));
+        appendStr(req, &r, sizeof(req), "\r\n");
+    }
+    appendStr(req, &r, sizeof(req), "\r\n");
+    if (body[0] && (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0 || strcmp(method, "DELETE") == 0)) {
+        appendStr(req, &r, sizeof(req), body);
+    }
+
+    static char num[16];
+    putString("  HTTP "); putString(method); putString(" http://"); putString(host); putString(path); putString(" ...\n");
+    bool ok = network->tcpRequestText(ip, static_cast<uint16_t>(port), req, resp, sizeof(resp));
+    if (!ok) { putString("  curl: TCP request failed\n"); return; }
+    u32ToDec(static_cast<uint32_t>(r), num, sizeof(num)); putString("  Request bytes: "); putString(num); putString("\n");
+    if (resp[0]) { putString(resp); putString("\n"); }
+    else putString("  Connected, but no HTTP data received\n");
+}
+
+void Terminal::cmdTor(const char* args) {
+    putString("\nTor consensus control\n");
+    putString("  Policy: onion-only; no clearnet fallback for apps\n");
+    putString("  Scope now: directory-consensus reachability and relay-table sample\n");
+
+    if (!network) {
+        putString("  Network: unavailable\n");
+        return;
+    }
+
+    const NetworkInfo& info = network->getInfo();
+    if (!info.rtl8139Present || !info.rxEnabled) {
+        putString("  Network: blocked; Ethernet is not online\n");
+        return;
+    }
+    if (info.ipAddress == 0 || info.gatewayIp == 0) {
+        putString("  Network: blocked; run dhcp first\n");
+        return;
+    }
+
+    if (args[0] == '\0' || strcmp(args, "status") == 0) {
+        static char num[16];
+        putString("  Directory: ");
+        putString(torDirectoryReachable ? "reachable\n" : "not checked/reachable yet\n");
+        if (torDirectoryReachable) {
+            u32ToDec(torRelayCount, num, sizeof(num)); putString("  Relays parsed in sample: "); putString(num); putString("\n");
+            u32ToDec(torGuardCount, num, sizeof(num)); putString("  Guards: "); putString(num); putString("\n");
+            u32ToDec(torExitCount, num, sizeof(num)); putString("  Exits: "); putString(num); putString("\n");
+            u32ToDec(torFastCount, num, sizeof(num)); putString("  Fast: "); putString(num); putString("\n");
+            u32ToDec(torStableCount, num, sizeof(num)); putString("  Stable: "); putString(num); putString("\n");
+            u32ToDec(torRunningCount, num, sizeof(num)); putString("  Running: "); putString(num); putString("\n");
+            u32ToDec(torValidCount, num, sizeof(num)); putString("  Valid: "); putString(num); putString("\n");
+            u32ToDec(torUsableGuardCount, num, sizeof(num)); putString("  Usable guards: "); putString(num); putString("\n");
+            if (torSelectedNickname[0]) {
+                putString("  Selected guard candidate:\n");
+                putString("    nickname: "); putString(torSelectedNickname); putString("\n");
+                putString("    ip: "); putString(torSelectedIp); putString("\n");
+                u32ToDec(torSelectedOrPort, num, sizeof(num)); putString("    orport: "); putString(num); putString("\n");
+                putString("    flags: Guard");
+                if (torSelectedHasFast) putString(" Fast");
+                if (torSelectedHasStable) putString(" Stable");
+                if (torSelectedHasRunning) putString(" Running");
+                if (torSelectedHasValid) putString(" Valid");
+                if (torSelectedHasExit) putString(" Exit");
+                putString("\n");
+            }
+        }
+        putString("  TLS to selected ORPort: ");
+        putString(torTlsReady ? "server handshake record seen\n" : "not checked/ready yet\n");
+        if (torTlsRxLen) {
+            u32ToDec(torTlsRxLen, num, sizeof(num)); putString("  TLS bytes received: "); putString(num); putString("\n");
+            if (torTlsRecordType) {
+                putString("  TLS last record: "); putString(tlsRecordTypeName(torTlsRecordType));
+                putString(" len="); u32ToDec(torTlsRecordLen, num, sizeof(num)); putString(num); putString("\n");
+                if (torTlsHandshakeType) { putString("  TLS last handshake: "); putString(tlsHandshakeTypeName(torTlsHandshakeType)); putString("\n"); }
+                if (torTlsAlertDescription) { putString("  TLS last alert: "); putString(tlsAlertDescriptionName(torTlsAlertDescription)); putString("\n"); }
+            }
+        }
+        putString("  Circuits: ");
+        putString(torCircuitsReady ? "ready\n" : "not implemented yet\n");
+        putString("  Next command: ");
+        if (!torDirectoryReachable) putString("tor consensus\n");
+        else if (!torTlsReady) putString("tor tls\n");
+        else putString("tor circuit\n");
+        return;
+    }
+
+    if (strcmp(args, "tls") == 0) {
+        if (!torSelectedNickname[0] || !torSelectedIp[0] || torSelectedOrPort == 0) {
+            putString("  No selected guard yet; running tor consensus first...\n");
+            cmdTor("consensus");
+            if (!torSelectedNickname[0] || !torSelectedIp[0] || torSelectedOrPort == 0) {
+                putString("  TLS: blocked; no usable Guard candidate in consensus sample\n");
+                return;
+            }
+        }
+
+        uint32_t guardIp = 0;
+        if (!network->parseIp(torSelectedIp, &guardIp)) {
+            putString("  TLS: blocked; selected Guard IP is invalid\n");
+            return;
+        }
+
+        static uint8_t tlsResponse[512];
+        uint16_t tlsLen = 0;
+        static char num[16];
+        putString("  TLS probe to selected Guard ORPort\n");
+        putString("    nickname: "); putString(torSelectedNickname); putString("\n");
+        putString("    ip: "); putString(torSelectedIp); putString("\n");
+        u32ToDec(torSelectedOrPort, num, sizeof(num)); putString("    orport: "); putString(num); putString("\n");
+        putString("  Sending TLS 1.2 ClientHello...\n");
+        bool ok = network->tcpRequestRaw(guardIp, static_cast<uint16_t>(torSelectedOrPort), TOR_TLS_CLIENT_HELLO, sizeof(TOR_TLS_CLIENT_HELLO), tlsResponse, sizeof(tlsResponse), &tlsLen);
+        torTlsRxLen = tlsLen;
+        TlsParsedRecord rec;
+        bool parsed = parseTlsRecord(tlsResponse, tlsLen, &rec);
+        torTlsRecordType = rec.recordType;
+        torTlsMajor = rec.major;
+        torTlsMinor = rec.minor;
+        torTlsRecordLen = rec.recordLen;
+        torTlsHandshakeType = rec.handshakeType;
+        torTlsHandshakeLen = rec.handshakeLen;
+        torTlsAlertLevel = rec.alertLevel;
+        torTlsAlertDescription = rec.alertDescription;
+        torTlsHandshakeSeen = parsed && rec.isHandshake && rec.handshakeType == 0x02;
+        torTlsReady = ok && torTlsHandshakeSeen;
+        if (!ok) {
+            putString("  TLS: TCP/ClientHello probe failed\n");
+            putString("  Circuits: blocked; no TLS transport\n");
+            return;
+        }
+        u32ToDec(tlsLen, num, sizeof(num)); putString("  TLS bytes received: "); putString(num); putString("\n");
+        if (tlsLen >= 5) {
+            char hx[3];
+            putString("  TLS record header: ");
+            for (int b = 0; b < 5; b++) { byteToHex(tlsResponse[b], hx); putString(hx); if (b != 4) putString(" "); }
+            putString("\n");
+        }
+        if (parsed) {
+            putString("  TLS record: "); putString(tlsRecordTypeName(rec.recordType));
+            putString(" v"); u32ToDec(rec.major, num, sizeof(num)); putString(num); putString(".");
+            u32ToDec(rec.minor, num, sizeof(num)); putString(num);
+            putString(" len="); u32ToDec(rec.recordLen, num, sizeof(num)); putString(num); putString("\n");
+            if (rec.isHandshake) {
+                putString("  TLS handshake: "); putString(tlsHandshakeTypeName(rec.handshakeType));
+                putString(" len="); u32ToDec(rec.handshakeLen, num, sizeof(num)); putString(num); putString("\n");
+            }
+            if (rec.isAlert) {
+                putString("  TLS alert: level="); u32ToDec(rec.alertLevel, num, sizeof(num)); putString(num);
+                putString(" desc="); u32ToDec(rec.alertDescription, num, sizeof(num)); putString(num);
+                putString(" ("); putString(tlsAlertDescriptionName(rec.alertDescription)); putString(")\n");
+            }
+        }
+        if (torTlsHandshakeSeen) {
+            putString("  TLS: ServerHello handshake record seen\n");
+            putString("  Tor TLS record parser proof OK\n");
+            putString("  Next: implement TLS key schedule + encrypted record IO, then Tor VERSIONS/CERTS/NETINFO cells\n");
+        } else if (parsed) {
+            putString("  TLS: record parsed, but full handshake is not established\n");
+            putString("  Next: add certificate parsing/key exchange/Finished verification\n");
+        } else {
+            putString("  TLS: response was not a TLS record\n");
+        }
+        torCircuitsReady = false;
+        putString("  Circuits: not implemented yet\n");
+        putString("  Safe result: onion apps still blocked until full TLS, Tor cells, ntor, circuits, and streams exist\n");
+        return;
+    }
+
+    if (strcmp(args, "circuit") == 0 || strcmp(args, "circuits") == 0) {
+        putString("  Circuit bootstrap control\n");
+        if (!torTlsReady) {
+            putString("  TLS: not ready; run tor tls first\n");
+            putString("  Circuits: blocked fail-closed\n");
+            return;
+        }
+        putString("  TLS: initial ServerHello proof exists\n");
+        putString("  Circuits: not implemented yet\n");
+        putString("  Missing native Tor pieces:\n");
+        putString("    1. Complete TLS handshake and key schedule\n");
+        putString("    2. Encrypted TLS record read/write\n");
+        putString("    3. Tor link cells: VERSIONS, CERTS, AUTH_CHALLENGE, NETINFO\n");
+        putString("    4. ntor CREATE2/CREATED2 circuit handshake\n");
+        putString("    5. RELAY_BEGIN/CONNECTED/DATA/END stream cells\n");
+        putString("  Safe result: no onion app traffic is allowed yet\n");
+        return;
+    }
+
+    bool wantConsensus = (strcmp(args, "bootstrap") == 0 || strcmp(args, "connect") == 0 || strcmp(args, "consensus") == 0);
+    if (!wantConsensus) {
+        putString("  Usage:\n");
+        putString("    tor status\n");
+        putString("    tor bootstrap\n");
+        putString("    tor consensus\n");
+        putString("    tor tls\n");
+        putString("    tor circuit\n");
+        return;
+    }
+
+    uint32_t authorityIp = 0;
+    network->parseIp("128.31.0.39", &authorityIp); // moria1 Tor directory authority
+    static char response[8192];
+    static const char request[] =
+        "GET /tor/status-vote/current/consensus HTTP/1.0\r\n"
+        "Host: 128.31.0.39\r\n"
+        "Connection: close\r\n\r\n";
+
+    putString("  Connecting to Tor directory authority moria1 128.31.0.39:9131...\n");
+    bool ok = network->tcpRequestText(authorityIp, 9131, request, response, sizeof(response));
+    if (!ok) {
+        torDirectoryReachable = false;
+        putString("  Directory: TCP/HTTP request failed\n");
+        putString("  Status: not connected to Tor yet\n");
+        return;
+    }
+
+    if (textContains(response, "network-status-version") || textContains(response, "HTTP/1.0 200") || textContains(response, "HTTP/1.1 200")) {
+        TorConsensusSummary summary;
+        parseTorConsensus(response, &summary);
+
+        torDirectoryReachable = true;
+        torRelayCount = summary.relays;
+        torGuardCount = summary.guards;
+        torExitCount = summary.exits;
+        torFastCount = summary.fast;
+        torStableCount = summary.stable;
+        torRunningCount = summary.running;
+        torValidCount = summary.valid;
+        torUsableGuardCount = summary.usableGuards;
+        torSelectedOrPort = summary.selectedOrPort;
+        torSelectedHasFast = summary.selectedFast;
+        torSelectedHasStable = summary.selectedStable;
+        torSelectedHasRunning = summary.selectedRunning;
+        torSelectedHasValid = summary.selectedValid;
+        torSelectedHasExit = summary.selectedExit;
+        int i = 0;
+        for (; summary.selectedNickname[i] && i < 31; i++) torSelectedNickname[i] = summary.selectedNickname[i];
+        torSelectedNickname[i] = '\0';
+        i = 0;
+        for (; summary.selectedIp[i] && i < 15; i++) torSelectedIp[i] = summary.selectedIp[i];
+        torSelectedIp[i] = '\0';
+
+        static char num[16];
+        putString("  Directory: reachable; consensus response started\n");
+        putString("  Tor consensus parsed\n");
+        u32ToDec(torRelayCount, num, sizeof(num)); putString("  Relays: "); putString(num); putString("\n");
+        u32ToDec(torGuardCount, num, sizeof(num)); putString("  Guards: "); putString(num); putString("\n");
+        u32ToDec(torExitCount, num, sizeof(num)); putString("  Exits: "); putString(num); putString("\n");
+        u32ToDec(torFastCount, num, sizeof(num)); putString("  Fast: "); putString(num); putString("\n");
+        u32ToDec(torStableCount, num, sizeof(num)); putString("  Stable: "); putString(num); putString("\n");
+        u32ToDec(torRunningCount, num, sizeof(num)); putString("  Running: "); putString(num); putString("\n");
+        u32ToDec(torValidCount, num, sizeof(num)); putString("  Valid: "); putString(num); putString("\n");
+        u32ToDec(torUsableGuardCount, num, sizeof(num)); putString("  Usable guards: "); putString(num); putString("\n");
+        if (torSelectedNickname[0]) {
+            putString("  Selected guard candidate:\n");
+            putString("    nickname: "); putString(torSelectedNickname); putString("\n");
+            putString("    ip: "); putString(torSelectedIp); putString("\n");
+            u32ToDec(torSelectedOrPort, num, sizeof(num)); putString("    orport: "); putString(num); putString("\n");
+            putString("    flags: Guard");
+            if (torSelectedHasFast) putString(" Fast");
+            if (torSelectedHasStable) putString(" Stable");
+            if (torSelectedHasRunning) putString(" Running");
+            if (torSelectedHasValid) putString(" Valid");
+            if (torSelectedHasExit) putString(" Exit");
+            putString("\n");
+        } else {
+            putString("  Selected guard candidate: none in received sample\n");
+        }
+        putString("  Tor link: directory consensus proof OK\n");
+        putString("  Next: TLS connection to selected ORPort\n");
+    } else {
+        torDirectoryReachable = false;
+        torRelayCount = 0;
+        torGuardCount = 0;
+        torExitCount = 0;
+        torFastCount = 0;
+        torStableCount = 0;
+        torRunningCount = 0;
+        torValidCount = 0;
+        torUsableGuardCount = 0;
+        torSelectedNickname[0] = '\0';
+        torSelectedIp[0] = '\0';
+        torSelectedOrPort = 0;
+        putString("  Directory: connected but response was not a consensus\n");
+    }
+
+    torCircuitsReady = false;
+    putString("  Circuits: not implemented yet\n");
+    putString("  Safe result: onion apps still blocked until TLS, Tor cells, ntor, circuits, and streams exist\n");
+}
+
 void Terminal::cmdSecureChat(const char* args) {
     putString("\nSecureChat onion-only control\n");
     putString("  Policy: onion-only, no clearnet fallback\n");
@@ -1023,16 +1815,25 @@ void Terminal::cmdSecureChat(const char* args) {
     }
 
     if (args[0] == '\0' || strcmp(args, "status") == 0) {
-        putString("  Tor: not implemented/bootstrapped yet\n");
-        putString("  Status: blocked until native Tor is available\n");
-        putString("  Next: implement DHCP, stronger TCP, entropy/time, then Tor bootstrap\n");
+        putString("  Tor directory: ");
+        putString(torDirectoryReachable ? "reachable\n" : "not checked/reachable yet\n");
+        putString("  Tor TLS: ");
+        putString(torTlsReady ? "server handshake record seen\n" : "not ready\n");
+        putString("  Tor circuits: ");
+        putString(torCircuitsReady ? "ready\n" : "not implemented yet\n");
+        putString("  Status: blocked until native Tor circuits/streams are available\n");
+        putString("  Next: run tor consensus, tor tls, then implement TLS keys, Tor cells, ntor, circuits, streams\n");
         return;
     }
 
     if (strcmp(args, "start") == 0) {
+        putString("  Checking Tor bootstrap first...\n");
+        if (!torDirectoryReachable) {
+            cmdTor("bootstrap");
+        }
         putString("  Start request denied safely\n");
-        putString("  Reason: Tor subsystem is not bootstrapped\n");
-        putString("  No direct TCP/DNS fallback was attempted\n");
+        putString("  Reason: Tor circuits/streams are not implemented yet\n");
+        putString("  No direct TCP/DNS chat fallback was attempted\n");
         return;
     }
 

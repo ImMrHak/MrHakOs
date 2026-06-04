@@ -109,7 +109,7 @@ BIOS
       │    PML4 @ 0x90000 · PDPT @ 0x91000 · PD @ 0x92000
       ├── Enables PAE → sets EFER.LME → enables paging
       ├── Loads 64-bit GDT
-      └─► Long Mode jump → kernel at 0x10008
+      └─► Long Mode jump → kernel at 0x10010
            └─► entry64.asm → kernel_main() [C++]
                 └─► VGA · Interrupts · FileSystem · Network · Terminal
 ```
@@ -198,7 +198,7 @@ Same physical entry point (`0x7C00`), but the task is significantly more complex
   - One 2MB huge page entry identity-maps the first 2MB of physical memory
 - Sets `CR4.PAE` (Physical Address Extension), writes `EFER.LME` (Long Mode Enable) via `MSR 0xC0000080`, and enables paging with `CR0.PG`
 - Loads a 64-bit GDT and far-jumps into 64-bit Long Mode
-- Transfers control to the kernel at `0x10008` (skips the 8-byte signature header)
+- Transfers control to the kernel at `0x10010` (skips the signature/header bytes and matches the page-aligned x86_64 `_start` symbol)
 
 ---
 
@@ -228,18 +228,19 @@ Same role as `entry.asm` but for 64-bit mode.
 The single C++ translation unit that owns `kernel_main()`. This function runs after the assembly entry stub and orchestrates the entire OS startup sequence:
 
 ```
-1. Serial::init()         → enable COM1 debug output
-2. Vga vga               → text mode 80×25 display
-3. Interrupts interrupts  → IDT + PIC + PIT setup
-4. FileSystem fs          → create root directory
-5. Terminal terminal      → command interpreter object
-6. Network g_network      → global network object
-7. interrupts.init()      → install ISRs, remap PIC, start PIT timer
-8. fs.init()              → initialize root filesystem node
-9. g_network.init()       → scan PCI, find NIC, map registers
-10. terminal.init(...)    → link all subsystems, probe DHCP
-11. sti                   → enable CPU interrupts
-12. terminal.run()        → enter the interactive command loop (never returns)
+1. Serial::init()              → enable COM1 debug output
+2. initKernelMemoryProtection() → install early memory permission policy
+3. Vga vga                    → text mode 80×25 display
+4. Interrupts interrupts       → IDT + PIC + PIT setup
+5. FileSystem fs               → create root directory
+6. Terminal terminal           → command interpreter object
+7. Network g_network           → global network object
+8. interrupts.init()           → install ISRs, remap PIC, start PIT timer
+9. fs.init()                   → initialize root filesystem node
+10. g_network.init()           → scan PCI, find NIC, map registers
+11. terminal.init(...)         → link all subsystems
+12. sti                        → enable CPU interrupts
+13. terminal.run()             → enter the interactive command loop (never returns)
 ```
 
 ---
@@ -250,7 +251,7 @@ The single C++ translation unit that owns `kernel_main()`. This function runs af
 Links the kernel ELF binary with load address `0x10000`. Defines four program headers: `signature` (read-only, must be the first 8 bytes so the bootloader's signature check works), `text` (executable code), `rodata` (constants), and `data` (writable data + BSS). Sections are 16-byte aligned.
 
 #### `src/kernel/linker64.ld` — 64-bit
-Same load address (`0x10000`) but produces a 64-bit ELF. Sections are 8-byte aligned. The `.signature` section is placed first for the same signature-check reason.
+Same load address (`0x10000`) but produces a 64-bit ELF. The `.signature` section is placed first for the same signature-check reason. Linker symbols (`__text_start`, `__rodata_start`, `__data_start`, `__bss_start`, and matching `_end` symbols) are exported so the 64-bit memory-protection code can map kernel pages with Linux/Windows-style W^X permissions.
 
 ---
 
@@ -310,8 +311,10 @@ The interactive command interpreter. It owns the main run loop and dispatches us
 | `dns <hostname>` | `cmdDns()` | DNS A-record lookup via UDP port 53 |
 | `tcp <host> <port> <text>` | `cmdTcp()` | Minimal TCP: SYN → SYN-ACK → ACK → PSH/ACK → FIN |
 | `http <host>` | `cmdHttp()` | HTTP GET `/` on port 80; print first 512 bytes of response |
-| `securechat <cmd>` | `cmdSecurechat()` | Placeholder — reserved for future onion-routed chat |
+| `tor <status|bootstrap>` | `cmdTor()` | Fail-closed Tor bootstrap control; fetches a Tor directory consensus sample and counts relay/Guard/Exit entries in the response buffer |
+| `securechat <cmd>` | `cmdSecurechat()` | Onion-only secure chat control; refuses chat traffic until native Tor circuits/streams exist |
 | `kbd` | `cmdKbd()` | Print IRQ1 vs. polled scancode counters (USB/legacy keyboard debug) |
+| `meminfo` | `cmdMeminfo()` | Show RAM-only storage policy and early paging/NX/W^X status |
 
 ---
 
@@ -358,7 +361,7 @@ struct Node {
 | `cp(src, dst)` | Locate src file, allocate new content, create dst file in target dir |
 | `mv(src, dst)` | Rename or reparent a node (file or directory) |
 
-**Memory management:** `operator new` is implemented as a bump allocator pointing into a static 64 KB pool. `operator delete` is a no-op (no fragmentation in a kernel without a heap allocator).
+**Memory management:** `operator new` is implemented as a bump allocator pointing into a static 64 KB pool. `operator delete` is a no-op (no fragmentation in a kernel without a heap allocator). On x86-64, `initKernelMemoryProtection()` replaces the bootloader's first 2 MiB RWX huge-page mapping with 4 KiB page-table entries, enables `CR0.WP`, and enables NX when the CPU supports it. The current policy maps kernel text read/execute, rodata read-only/non-executable, and data/BSS/VGA/heap writable/non-executable. This is the first memory-permission layer; physical page allocation, `kmalloc`/`kfree`, process isolation, and user/kernel separation are future work.
 
 ---
 
@@ -576,6 +579,7 @@ The `Makefile` is the single source of truth for compilation, linking, and testi
 | `make smoke` | Headless boot of both images; type test commands; save screenshots to `bin/smoke32.ppm` and `bin/smoke64.ppm` |
 | `make smoke32` / `make smoke64` | Headless single-arch smoke test |
 | `make smoke32-net` / `make smoke64-net` | Headless smoke test with RTL8139 NIC; captures serial log + TCP payload |
+| `make iso` | Build and verify the real-hardware GRUB ISO, write `bin/boot-report.txt`, and write `bin/mrhakos-grub.iso.sha256` |
 | `make grubiso` | Build a GRUB2-bootable ISO image at `bin/mrhakos-grub.iso` |
 | `make grub-assets` | Generate `bin/kernel.elf` + `bin/41_mrhakos` GRUB script |
 | `make clean` | Remove all build artifacts from `bin/` |
@@ -724,6 +728,7 @@ help        # List all commands
 clear       # Clear screen
 mrhakos     # Show OS version banner
 kbd         # Show IRQ1 vs. polled scancode counters (keyboard debug)
+meminfo     # Show RAM-only storage and paging/NX/W^X protection state
 ```
 
 ### Network Commands
@@ -740,6 +745,10 @@ dns example.com                   # DNS A-record lookup
 tcp 10.0.2.2 8080 hello           # TCP client: send text and close
 http 1.1.1.1                      # HTTP GET / on port 80, print response
 netpoll                           # Manually drain the NIC RX ring once
+tor status                        # Show Tor bootstrap/circuit state
+tor bootstrap                     # Fetch and parse a Tor directory consensus sample from moria1
+securechat status                 # Show onion-only secure chat readiness
+securechat start                  # Safely checks Tor bootstrap, then blocks until circuits exist
 ```
 
 ---
@@ -823,6 +832,40 @@ Inside MrHakOS:
 tcp 10.0.2.2 8080 hello-tcp-from-mrhakos
 ```
 
+### Tor bootstrap check
+
+MrHakOS now has a fail-closed `tor` control command. It does **not** claim full Tor anonymity yet. Full Tor requires TLS, Tor cells, relay handshakes, ntor crypto, circuit building, stream multiplexing, guard/consensus validation, and onion service support. The current milestone proves that the native TCP stack can reach a Tor directory authority and fetch the beginning of a consensus document over the Tor directory protocol.
+
+```bash
+# 1. Configure networking first
+dhcp
+
+# 2. Confirm public TCP/DNS works if needed
+netinfo
+dns example.com
+http example.com
+
+# 3. Prove Tor directory reachability
+tor bootstrap
+```
+
+Expected successful result:
+
+```text
+Tor bootstrap control
+  Policy: onion-only; no clearnet fallback for apps
+  Scope now: directory-consensus reachability check
+  Connecting to Tor directory authority moria1 128.31.0.39:9131...
+  Directory: reachable; consensus response started
+  Parsed relay descriptors in sample: <count>
+  Parsed Guard flags in sample: <count>
+  Parsed Exit flags in sample: <count>
+  Tor link: directory bootstrap proof OK
+  Circuits: not implemented yet
+```
+
+`securechat start` intentionally remains blocked after this check. That is correct for a private communication tool: chat traffic must never fall back to direct TCP or direct DNS just because Tor circuits are not ready.
+
 ### Expected `netinfo` output (QEMU)
 
 ```
@@ -888,11 +931,24 @@ Reboot and select **MrHakOS 32-bit (Multiboot2)** from the GRUB menu.
 For real USB boot on normal PCs, the safest path is the GRUB ISO:
 
 ```bash
-make grubiso
-# writes bin/mrhakos-grub.iso
-# then use scripts/build_iso_usb.sh or dd manually:
+# Build + verify + checksum the current real-hardware ISO
+make iso
+
+# Output files:
+#   bin/mrhakos-grub.iso          bootable ISO to write/use
+#   bin/mrhakos-grub.iso.sha256   checksum for verifying the copy
+#   bin/boot-report.txt           BIOS MBR + GPT/EFI metadata report
+
+# Write to USB using the safety-checked helper:
+lsblk -o NAME,SIZE,MODEL,TRAN,TYPE,MOUNTPOINTS
+./scripts/build_iso_usb.sh --device /dev/sdX
+
+# Or write manually:
 sudo dd if=bin/mrhakos-grub.iso of=/dev/sdX bs=4M status=progress conv=fsync
+sync
 ```
+
+`make boot-report` writes `bin/boot-report.txt`. On the current Kali toolchain the report shows `System area summary: MBR protective-msdos-label grub2-mbr ... GPT ...` plus an `EFI boot partition`, so the ISO image is hybrid metadata-wise. This improves boot coverage across legacy BIOS/MBR and modern GPT/UEFI-style machines. It still does not mean every PC is guaranteed: Secure Boot may need to be disabled, some machines need CSM/Legacy Boot, and full UEFI-native graphics/input support is still future work.
 
 The custom BIOS raw image is also bootable and now has a `.bin` alias if you specifically want a bootable `.bin` file:
 
@@ -1086,13 +1142,35 @@ Press `Ctrl+Alt+1` to return to the VGA display.
 
 ## Future Roadmap
 
-- [ ] Physical and virtual memory management (page frame allocator)
+### Boot, memory, and RAM-only OS plan
+
+MrHakOS is intended to behave more like a real Linux/Windows-style operating system while staying RAM-only for privacy. That means the kernel should improve boot discovery and memory management without depending on a hard disk:
+
+- Parse the Multiboot2 memory map from GRUB and detect usable/reserved physical RAM instead of assuming fixed low-memory ranges.
+- Add a physical page-frame allocator for all usable RAM, then a virtual memory manager with page tables, guard pages, and kernel/user separation.
+- Replace the current bump allocator with a real kernel heap (`kmalloc`/`kfree`) backed by pages, including coalescing or slab pools for small objects to avoid fragmentation.
+- Keep the filesystem as a tmpfs-style in-memory filesystem: all files, chat state, keys, and logs live in RAM and are lost at reboot unless the user explicitly exports them.
+- Add RAM pressure accounting like Linux/Windows: total/free/used pages, heap stats, per-subsystem pools, and emergency reclaim for caches.
+- Improve boot reliability: early serial logs, clear boot stages, hardware detection summaries, safer fallback paths, and no network auto-DHCP unless the user types `dhcp`.
+- Add security hardening before real private communication: entropy collection, secure random generator, zeroization of secrets, stack canaries/guard pages, W^X page permissions, and fail-closed networking policy.
+
+### Feature checklist
+
+- [ ] Multiboot2 memory map parser and boot information handoff
+- [ ] Physical page-frame allocator
+- [x] Early x86-64 4 KiB paging permission layer: text RX, rodata R/NX, data/BSS RW/NX, CR0.WP, NX when supported
+- [ ] Full virtual memory manager, guard pages, and kernel/user separation
+- [ ] Real kernel heap with `kmalloc`/`kfree` and small-object pools
+- [ ] RAM-only tmpfs-style filesystem growth beyond the current small file pool
 - [ ] User mode and ring-3 isolation
 - [ ] System calls (syscall/sysret)
 - [ ] Process scheduling and multitasking
 - [ ] Disk I/O driver (IDE/AHCI) and persistent filesystem
 - [ ] TCP retransmission, receive buffering, listen/accept sockets
 - [ ] TLS/HTTPS support
+- [x] Tor directory authority bootstrap reachability check (`tor bootstrap`)
+- [ ] Native Tor TLS/cell protocol, ntor handshake, circuits, and streams
+- [ ] Onion service support for secure chat
 - [ ] SOCKS5 transport through an external Tor proxy
 - [ ] Native onion/Tor transport for anonymous chat
 - [ ] Secure P2P text chat over direct TCP
@@ -1107,6 +1185,7 @@ Press `Ctrl+Alt+1` to return to the VGA display.
 - [x] RTL8111/RTL8168/RTL8169 real hardware driver
 - [x] USB legacy keyboard fallback polling
 - [x] GRUB Multiboot2 boot path
+- [x] Hybrid GRUB ISO boot metadata verified with MBR protective label, GPT, and EFI boot partition (`make boot-report`)
 - [x] `cp` and `mv` filesystem commands
 
 ---

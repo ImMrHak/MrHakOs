@@ -6,7 +6,7 @@ section .signature
 kernel_signature:
     dw 0x8664 ; Magic number to identify valid kernel
 
-section .text
+section .text align=8
 [global _start]
 _start:
     ; Basic non-persistent VGA touch; Vga::clear() removes it before prompt.

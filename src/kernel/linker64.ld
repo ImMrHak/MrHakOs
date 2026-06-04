@@ -10,19 +10,36 @@ SECTIONS {
         *(.signature)
     }
 
+    __text_start = .;
     .text : ALIGN(8) {
         *(.text*)
     }
+    __text_end = .;
 
+    . = ALIGN(4096);
+    __rodata_start = .;
     .rodata : ALIGN(8) {
         *(.rodata*)
     }
+    __rodata_end = .;
 
+    . = ALIGN(4096);
+    __data_start = .;
     .data : ALIGN(8) {
         *(.data*)
     }
+    __data_end = .;
 
+    . = ALIGN(4096);
+    __bss_start = .;
     .bss : ALIGN(8) {
+        *(COMMON)
         *(.bss*)
+    }
+    __bss_end = .;
+
+    /DISCARD/ : {
+        *(.note*)
+        *(.comment*)
     }
 }

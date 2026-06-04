@@ -39,6 +39,7 @@ LIBC_CPP_FS   := $(SRC_DIR)/libc/filesystem.cpp
 LIBC_CPP_SERIAL := $(SRC_DIR)/libc/serial.cpp
 LIBC_CPP_PCI    := $(SRC_DIR)/libc/pci.cpp
 LIBC_CPP_NET    := $(SRC_DIR)/libc/network.cpp
+LIBC_CPP_MEM    := $(SRC_DIR)/libc/memory.cpp
 LIBC_ASM_ISR  := $(SRC_DIR)/libc/isr.asm
 LIBC_ASM_ISR64:= $(SRC_DIR)/libc/isr64.asm
 
@@ -52,13 +53,14 @@ KERNEL64_ELF  := $(BUILD_DIR)/kernel64.elf
 KERNEL64_BIN  := $(BUILD_DIR)/kernel64.bin
 IMAGE_FILE_64 := $(BUILD_DIR)/mrhakos64.img
 GRUB_ISO      := $(BUILD_DIR)/mrhakos-grub.iso
+GRUB_ISO_SHA  := $(GRUB_ISO).sha256
 GRUB_ISODIR   := $(BUILD_DIR)/grub-isodir
 GRUB_MENU_CFG := $(BUILD_DIR)/41_mrhakos
 
 FLOPPY_SIZE_BYTES := 1474560
 SECTOR_SIZE       := 512
-KERNEL_SECTORS_32 := 96
-KERNEL_SECTORS_64 := 96
+KERNEL_SECTORS_32 := 128
+KERNEL_SECTORS_64 := 128
 KERNEL_MAX_32     := $(shell expr $(KERNEL_SECTORS_32) \* $(SECTOR_SIZE))
 KERNEL_MAX_64     := $(shell expr $(KERNEL_SECTORS_64) \* $(SECTOR_SIZE))
 
@@ -72,6 +74,7 @@ OBJS := \
 	$(BUILD_DIR)/idt.o \
 	$(BUILD_DIR)/filesystem.o \
 	$(BUILD_DIR)/serial.o \
+	$(BUILD_DIR)/memory.o \
 	$(BUILD_DIR)/pci.o \
 	$(BUILD_DIR)/network.o \
 	$(BUILD_DIR)/isr.o
@@ -85,6 +88,7 @@ X64_OBJS := \
 	$(BUILD_DIR)/interrupts64_cpp.o \
 	$(BUILD_DIR)/filesystem64.o \
 	$(BUILD_DIR)/serial64.o \
+	$(BUILD_DIR)/memory64.o \
 	$(BUILD_DIR)/pci64.o \
 	$(BUILD_DIR)/network64.o \
 	$(BUILD_DIR)/isr64.o
@@ -97,7 +101,7 @@ X64_CXXFLAGS := -target x86_64-elf -D__x86_64__ $(COMMON_CXXFLAGS) -mno-red-zone
 LDFLAGS  := -T $(SRC_DIR)/kernel/linker.ld -nostdlib
 X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
 
-.PHONY: all all32 all64 run run32 run32-net run64 run64-net check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net grubiso grub-menu-config grub-assets clean
+.PHONY: all all32 all64 run run32 run32-net run64 run64-net check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
 
 all: all32
 
@@ -206,6 +210,10 @@ smoke64-net: all64
 # Build a GRUB-bootable ISO for real hardware/USB testing. GRUB loads the
 # 32-bit kernel ELF directly through Multiboot2; do not use Linux's `linux`
 # command or try to chainload the raw floppy image from Kali GRUB.
+iso: boot-report iso-checksum
+	@echo "=> Real-hardware ISO ready: $(GRUB_ISO)"
+	@echo "=> SHA256: $$(cut -d' ' -f1 $(GRUB_ISO_SHA))"
+
 grubiso: $(KERNEL_ELF) check-grub-tools
 	@echo "=> Checking Multiboot2 header in $(KERNEL_ELF)"
 	@grub-file --is-x86-multiboot2 $(KERNEL_ELF)
@@ -222,6 +230,17 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 		'}' > $(GRUB_ISODIR)/boot/grub/grub.cfg
 	@grub-mkrescue -o $(GRUB_ISO) $(GRUB_ISODIR) >/dev/null
 	@echo "=> Wrote $(GRUB_ISO)"
+
+iso-checksum: $(GRUB_ISO)
+	@sha256sum $(GRUB_ISO) | tee $(GRUB_ISO_SHA)
+
+boot-report: grubiso
+	@echo "=> Verifying ISO hybrid boot metadata (BIOS MBR + GPT/EFI when GRUB tools provide it)"
+	@file $(GRUB_ISO)
+	@xorriso -indev $(GRUB_ISO) -report_system_area plain 2>/dev/null | tee $(BUILD_DIR)/boot-report.txt
+	@grep -q 'MBR' $(BUILD_DIR)/boot-report.txt
+	@grep -q 'GPT' $(BUILD_DIR)/boot-report.txt
+	@echo "=> Boot report wrote $(BUILD_DIR)/boot-report.txt"
 
 # Generate a standalone Kali /etc/grub.d script. Install manually with sudo
 # after copying bin/kernel.elf to /boot/mrhakos/kernel.elf.
@@ -389,6 +408,16 @@ $(BUILD_DIR)/serial.o: $(LIBC_CPP_SERIAL)
 $(BUILD_DIR)/serial64.o: $(LIBC_CPP_SERIAL)
 	@mkdir -p $(BUILD_DIR)
 	@echo "=> Compiling LibC C++ (serial, x64): $<"
+	@$(X64_CXX) $(X64_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/memory.o: $(LIBC_CPP_MEM)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (memory): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/memory64.o: $(LIBC_CPP_MEM)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (memory, x64): $<"
 	@$(X64_CXX) $(X64_CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/pci.o: $(LIBC_CPP_PCI)

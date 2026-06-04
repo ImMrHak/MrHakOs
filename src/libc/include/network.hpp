@@ -63,6 +63,7 @@ public:
     bool resolveDnsA(const char* hostname, uint32_t* outIp);
     bool sendTcpText(uint32_t targetIp, uint16_t destPort, const char* text);
     bool tcpRequestText(uint32_t targetIp, uint16_t destPort, const char* text, char* outResponse, uint16_t outLen);
+    bool tcpRequestRaw(uint32_t targetIp, uint16_t destPort, const uint8_t* data, uint16_t dataLen, uint8_t* outResponse, uint16_t outCap, uint16_t* outLen);
 
 private:
     NetworkInfo info;
@@ -95,7 +96,7 @@ private:
     bool tcpRstSeen;
     bool tcpDataSeen;
     uint16_t tcpRxLen;
-    char tcpRxBuffer[512];
+    char tcpRxBuffer[8192];
     bool dhcpOfferSeen;
     bool dhcpAckSeen;
     uint32_t dhcpXid;

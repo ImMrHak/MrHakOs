@@ -154,8 +154,9 @@ enter_lm:
     mov gs, ax
     mov ss, ax
 
-    ; Jump to kernel entry
-    mov rax, 0x10000 + 8
+    ; Jump to kernel entry. The flat binary starts with an 8-byte signature
+    ; header plus linker/input-section alignment padding before _start.
+    mov rax, 0x10000 + 16
     jmp rax
 
 ; --- Minimal helpers removed to fit within 512 bytes ---
