@@ -15,26 +15,32 @@ static Network kernelNetwork;
 
 // Scan the Multiboot2 info structure for a framebuffer tag and wire it up.
 static void mb2_init_fb(Vga& vga, uint32_t mb_info_addr) {
+    Serial::writeString("[kernel] scanning MB2 tags for framebuffer\n");
     uint32_t total = *(volatile uint32_t*)mb_info_addr;
-    uint8_t* ptr   = (uint8_t*)(mb_info_addr + 8);   // skip total_size + reserved
+    uint8_t* ptr   = (uint8_t*)(mb_info_addr + 8);
     uint8_t* end   = (uint8_t*)mb_info_addr + total;
     while (ptr < end) {
         uint32_t tag_type = *(uint32_t*)ptr;
         uint32_t tag_size = *(uint32_t*)(ptr + 4);
-        if (tag_type == 0) break;                     // end tag
-        if (tag_type == 8) {                          // framebuffer tag
+        if (tag_type == 0) break;
+        if (tag_type == 8) {
             uint64_t fb_addr  = *(uint64_t*)(ptr + 8);
             uint32_t fb_pitch = *(uint32_t*)(ptr + 16);
             uint32_t fb_w     = *(uint32_t*)(ptr + 20);
             uint32_t fb_h     = *(uint32_t*)(ptr + 24);
             uint8_t  fb_bpp   = *(uint8_t* )(ptr + 28);
             uint8_t  fb_type  = *(uint8_t* )(ptr + 29);
-            // type 1 = RGB direct-color linear framebuffer; fits in 32-bit addr space
-            if (fb_type == 1 && fb_bpp >= 24 && (fb_addr >> 32) == 0)
+            if (fb_type == 1 && fb_bpp >= 24 && (fb_addr >> 32) == 0) {
+                Serial::writeString("[kernel] linear framebuffer found -> FB mode\n");
                 vga.init_fb((uint32_t)fb_addr, fb_pitch, fb_w, fb_h, fb_bpp);
+            } else if (fb_type == 2) {
+                Serial::writeString("[kernel] EGA text framebuffer (VGA text mode kept)\n");
+            } else {
+                Serial::writeString("[kernel] framebuffer tag unsuitable -> VGA text mode kept\n");
+            }
             break;
         }
-        ptr += (tag_size + 7) & ~7u;                  // tags are 8-byte aligned
+        ptr += (tag_size + 7) & ~7u;
     }
 }
 

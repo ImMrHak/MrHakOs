@@ -177,7 +177,9 @@ run-uefi: iso
 		exit 1; \
 	fi
 	@echo "=> Using OVMF: $(OVMF_FD)"
-	@$(QEMU64) -bios $(OVMF_FD) -cdrom $(GRUB_ISO) -serial stdio -no-reboot -no-shutdown
+	@echo "=> Serial log: $(BUILD_DIR)/serial-uefi.log  (tail -f it in another terminal)"
+	@$(QEMU64) -bios $(OVMF_FD) -cdrom $(GRUB_ISO) \
+		-serial file:$(BUILD_DIR)/serial-uefi.log -no-reboot -no-shutdown
 
 smoke: smoke32 smoke64
 
