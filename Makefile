@@ -248,11 +248,7 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 		'set default=0' \
 		'' \
 		'menuentry "MrHakOS 32-bit (Multiboot2)" {' \
-		'    if [ "$$grub_platform" = "efi" ]; then' \
-		'        set gfxpayload=keep' \
-		'    else' \
-		'        set gfxpayload=text' \
-		'    fi' \
+		'    set gfxpayload=keep' \
 		'    multiboot2 /boot/mrhakos-kernel.elf' \
 		'    boot' \
 		'}' > $(GRUB_ISODIR)/boot/grub/grub.cfg

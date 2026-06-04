@@ -17,6 +17,23 @@ multiboot2_header_start:
     dd 0                                  ; protected-mode i386 architecture
     dd multiboot2_header_end - multiboot2_header_start
     dd -(0xE85250D6 + 0 + (multiboot2_header_end - multiboot2_header_start))
+
+    ; Framebuffer request tag (type 5). REQUIRED so GRUB hands the kernel a
+    ; linear graphics framebuffer. On UEFI there is no VGA text mode, so without
+    ; this GRUB warns "no console will be available" and 0xB8000 writes are lost.
+    ; GRUB treats width/height/depth as preferences and provides the closest mode
+    ; (on UEFI with gfxpayload=keep it passes the live GOP framebuffer).
+    align 8
+fb_tag_start:
+    dw 5                                  ; tag type: framebuffer
+    dw 0                                  ; flags (0 = required)
+    dd fb_tag_end - fb_tag_start          ; tag size (20)
+    dd 1024                               ; preferred width
+    dd 768                                ; preferred height
+    dd 32                                 ; preferred bits-per-pixel
+fb_tag_end:
+
+    align 8
     dw 0                                  ; end tag type
     dw 0                                  ; end tag flags
     dd 8                                  ; end tag size
