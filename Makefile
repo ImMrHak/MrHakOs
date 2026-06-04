@@ -242,11 +242,12 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 		'insmod efi_uga' \
 		'insmod video_bochs' \
 		'insmod video_cirrus' \
-		'set gfxmode=auto' \
+		'terminal_output console' \
 		'set timeout=5' \
 		'set default=0' \
 		'' \
 		'menuentry "MrHakOS 32-bit (Multiboot2)" {' \
+		'    set gfxpayload=text' \
 		'    multiboot2 /boot/mrhakos-kernel.elf' \
 		'    boot' \
 		'}' > $(GRUB_ISODIR)/boot/grub/grub.cfg
