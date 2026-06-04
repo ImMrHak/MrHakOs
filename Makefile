@@ -239,7 +239,6 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 	@printf '%s\n' \
 		'insmod all_video' \
 		'insmod efi_gop' \
-		'insmod efi_uga' \
 		'insmod video_bochs' \
 		'insmod video_cirrus' \
 		'set gfxmode=auto' \
