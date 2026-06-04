@@ -56,6 +56,8 @@ GRUB_ISO      := $(BUILD_DIR)/mrhakos-grub.iso
 GRUB_ISO_SHA  := $(GRUB_ISO).sha256
 GRUB_ISODIR   := $(BUILD_DIR)/grub-isodir
 GRUB_MENU_CFG := $(BUILD_DIR)/41_mrhakos
+OVMF_PATHS    := /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd
+OVMF_FD      := $(firstword $(wildcard $(OVMF_PATHS)))
 
 FLOPPY_SIZE_BYTES := 1474560
 SECTOR_SIZE       := 512
@@ -101,7 +103,7 @@ X64_CXXFLAGS := -target x86_64-elf -D__x86_64__ $(COMMON_CXXFLAGS) -mno-red-zone
 LDFLAGS  := -T $(SRC_DIR)/kernel/linker.ld -nostdlib
 X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
 
-.PHONY: all all32 all64 run run32 run32-net run64 run64-net check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
+.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
 
 all: all32
 
@@ -163,6 +165,20 @@ run64: all64
 run64-net: all64
 	@$(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial stdio -no-reboot -no-shutdown
 
+# Boot GRUB ISO with BIOS firmware (no UEFI)
+run-grub: iso
+	@$(QEMU64) -cdrom $(GRUB_ISO) -no-reboot -no-shutdown
+
+# Boot GRUB ISO with UEFI firmware (OVMF). Requires ovmf package:
+#   sudo apt-get install ovmf
+run-uefi: iso
+	@if [ -z "$(OVMF_FD)" ]; then \
+		echo "ERROR: OVMF firmware not found. Install with: sudo apt-get install ovmf"; \
+		exit 1; \
+	fi
+	@echo "=> Using OVMF: $(OVMF_FD)"
+	@$(QEMU64) -bios $(OVMF_FD) -cdrom $(GRUB_ISO) -no-reboot -no-shutdown
+
 smoke: smoke32 smoke64
 
 smoke32: all32
@@ -221,6 +237,12 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 	@mkdir -p $(GRUB_ISODIR)/boot/grub
 	@cp $(KERNEL_ELF) $(GRUB_ISODIR)/boot/mrhakos-kernel.elf
 	@printf '%s\n' \
+		'insmod all_video' \
+		'insmod efi_gop' \
+		'insmod efi_uga' \
+		'insmod video_bochs' \
+		'insmod video_cirrus' \
+		'set gfxmode=auto' \
 		'set timeout=5' \
 		'set default=0' \
 		'' \
