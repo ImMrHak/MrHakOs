@@ -149,6 +149,7 @@ Network::Network() {
     tcpRstSeen = false;
     tcpDataSeen = false;
     tcpRxLen = 0;
+    tcpConsumed = 0;
     tcpRxBuffer[0] = 0;
     dhcpOfferSeen = false;
     dhcpAckSeen = false;
@@ -1259,4 +1260,245 @@ bool Network::tcpRequestText(uint32_t targetIp, uint16_t destPort, const char* t
         outResponse[nul] = 0;
     }
     return ok;
+}
+
+// --- Persistent TCP session helpers (used by the SOCKS5 client) ---------------
+// tcpRequestRaw is one-shot (SYN..send..drain..FIN). SOCKS5 negotiation needs
+// several request/response exchanges over one connection, so these keep the
+// connection open and track consumption of tcpRxBuffer via tcpConsumed.
+
+bool Network::tcpSessionOpen(uint32_t targetIp, uint16_t destPort) {
+    if (!info.rtl8139Present) return false;
+
+    lastTcpRemoteIp = targetIp;
+    lastTcpDestPort = destPort;
+    lastTcpSourcePort = static_cast<uint16_t>(43000 + (nextIcmpSeq & 0x0fff));
+    lastTcpSeq = 0x53430000u + nextIcmpSeq++; // 'SC' session base
+    lastTcpAck = 0;
+    tcpSynAckSeen = false;
+    tcpFinSeen = false;
+    tcpRstSeen = false;
+    tcpDataSeen = false;
+    tcpRxLen = 0;
+    tcpConsumed = 0;
+    tcpRxBuffer[0] = 0;
+
+    if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, 0, 0x02, 0, 0)) return false;
+    Serial::writeString("[net] SOCKS5 session SYN sent\n");
+    uint32_t deadline = timerMillis() + 5000;
+    while (timerMillis() < deadline) {
+        poll();
+        if (tcpRstSeen) return false;
+        if (tcpSynAckSeen) break;
+    }
+    if (!tcpSynAckSeen) return false;
+
+    // Complete the handshake; the connection then stays open for exchanges.
+    return sendTcpPacket(lastTcpRemoteIp, lastTcpSourcePort, lastTcpDestPort, lastTcpSeq, lastTcpAck, 0x10, 0, 0);
+}
+
+bool Network::tcpSessionSend(const uint8_t* data, uint16_t len) {
+    if (!info.rtl8139Present || !tcpSynAckSeen || tcpRstSeen) return false;
+    if (len == 0) return true;
+    if (!data) return false;
+    uint16_t off = 0;
+    while (off < len) {
+        uint16_t chunk = static_cast<uint16_t>(len - off);
+        if (chunk > 256) chunk = 256;
+        if (!sendTcpPacket(lastTcpRemoteIp, lastTcpSourcePort, lastTcpDestPort, lastTcpSeq, lastTcpAck, 0x18, data + off, chunk)) return false;
+        lastTcpSeq += chunk;
+        off = static_cast<uint16_t>(off + chunk);
+        poll(); // let cumulative ACKs / an early reply drain between segments
+    }
+    return true;
+}
+
+bool Network::tcpSessionWait(uint16_t needed, uint32_t totalMs) {
+    uint32_t deadline = timerMillis() + totalMs;
+    while (timerMillis() < deadline) {
+        poll();
+        if (tcpRstSeen) return false;
+        if (static_cast<uint16_t>(tcpRxLen - tcpConsumed) >= needed) return true;
+        if (tcpFinSeen) break;
+    }
+    return static_cast<uint16_t>(tcpRxLen - tcpConsumed) >= needed;
+}
+
+uint16_t Network::tcpSessionDrain(uint8_t* out, uint16_t cap, uint32_t quietMs, uint32_t totalMs) {
+    uint32_t start = timerMillis();
+    uint16_t lastSeen = tcpRxLen;
+    uint32_t lastChange = start;
+    for (;;) {
+        poll();
+        uint32_t now = timerMillis();
+        if (tcpRxLen != lastSeen) { lastSeen = tcpRxLen; lastChange = now; }
+        if (tcpRstSeen || tcpFinSeen) break;
+        if (static_cast<uint16_t>(tcpRxLen - tcpConsumed) > 0 && (now - lastChange) >= quietMs) break;
+        if (now - start >= totalMs) break;
+    }
+    uint16_t avail = static_cast<uint16_t>(tcpRxLen - tcpConsumed);
+    uint16_t copyLen = avail < cap ? avail : cap;
+    if (out) {
+        for (uint16_t i = 0; i < copyLen; i++) out[i] = static_cast<uint8_t>(tcpRxBuffer[tcpConsumed + i]);
+    }
+    tcpConsumed = static_cast<uint16_t>(tcpConsumed + copyLen);
+    return copyLen;
+}
+
+void Network::tcpSessionClose() {
+    if (info.rtl8139Present && tcpSynAckSeen && !tcpRstSeen && !tcpFinSeen) {
+        sendTcpPacket(lastTcpRemoteIp, lastTcpSourcePort, lastTcpDestPort, lastTcpSeq, lastTcpAck, 0x11, 0, 0);
+        Serial::writeString("[net] SOCKS5 session FIN sent\n");
+    }
+}
+
+bool Network::socks5Connect(uint32_t proxyIp, uint16_t proxyPort,
+                            const char* destHost, uint32_t destIp, uint16_t destPort,
+                            const char* username, const char* password,
+                            const uint8_t* appData, uint16_t appLen,
+                            uint8_t* outResponse, uint16_t outCap, uint16_t* outLen,
+                            Socks5Result* outResult) {
+    Socks5Result local;
+    local.tcpConnected = false;
+    local.methodSelected = false;
+    local.method = 0xFF;
+    local.authPerformed = false;
+    local.authOk = false;
+    local.connectOk = false;
+    local.replyCode = 0xFF;
+    local.boundAtyp = 0;
+    local.boundIp = 0;
+    local.boundPort = 0;
+    local.appResponseLen = 0;
+    local.failPhase = 1; // TCP-to-proxy
+    if (outLen) *outLen = 0;
+
+    if (!info.rtl8139Present) { if (outResult) *outResult = local; return false; }
+
+    // Prefer a domain target (ATYP 0x03) so the proxy resolves it remotely and
+    // no local DNS query leaks the destination. Fall back to a literal IPv4.
+    bool useDomain = (destHost && destHost[0] != '\0');
+    uint16_t domLen = 0;
+    if (useDomain) {
+        while (destHost[domLen] && domLen < 255) domLen++;
+        // Keep the whole CONNECT request inside one <=256-byte TCP segment.
+        if (domLen == 0 || domLen > 248) { if (outResult) *outResult = local; return false; }
+    }
+
+    // 1. TCP to the proxy.
+    if (!tcpSessionOpen(proxyIp, proxyPort)) { if (outResult) *outResult = local; return false; }
+    local.tcpConnected = true;
+    Serial::writeString("[net] SOCKS5 proxy TCP connected\n");
+
+    // 2. Greeting: VER, NMETHODS, METHODS. Offer user/pass only with credentials.
+    bool offerUserPass = (username && username[0] != '\0');
+    uint8_t greet[4];
+    uint8_t g = 0;
+    greet[g++] = 0x05;
+    greet[g++] = static_cast<uint8_t>(offerUserPass ? 2 : 1);
+    greet[g++] = 0x00;                    // no authentication required
+    if (offerUserPass) greet[g++] = 0x02; // username/password (RFC 1929)
+    local.failPhase = 2;
+    if (!tcpSessionSend(greet, g) || !tcpSessionWait(2, 6000)) { tcpSessionClose(); if (outResult) *outResult = local; return false; }
+    const uint8_t* msel = reinterpret_cast<const uint8_t*>(tcpRxBuffer) + tcpConsumed;
+    uint8_t selVer = msel[0];
+    uint8_t selMethod = msel[1];
+    tcpConsumed = static_cast<uint16_t>(tcpConsumed + 2);
+    if (selVer != 0x05) { tcpSessionClose(); if (outResult) *outResult = local; return false; }
+    local.methodSelected = true;
+    local.method = selMethod;
+
+    // 3. Authenticate if the proxy selected username/password.
+    if (selMethod == 0xFF) { local.failPhase = 3; tcpSessionClose(); if (outResult) *outResult = local; return false; }
+    if (selMethod == 0x02) {
+        if (!offerUserPass) { local.failPhase = 4; tcpSessionClose(); if (outResult) *outResult = local; return false; }
+        uint16_t ulen = 0; while (username[ulen] && ulen < 255) ulen++;
+        uint16_t plen = 0; if (password) { while (password[plen] && plen < 255) plen++; }
+        static uint8_t authMsg[1 + 1 + 255 + 1 + 255];
+        uint16_t a = 0;
+        authMsg[a++] = 0x01; // user/pass auth version
+        authMsg[a++] = static_cast<uint8_t>(ulen);
+        for (uint16_t i = 0; i < ulen; i++) authMsg[a++] = static_cast<uint8_t>(username[i]);
+        authMsg[a++] = static_cast<uint8_t>(plen);
+        for (uint16_t i = 0; i < plen; i++) authMsg[a++] = static_cast<uint8_t>(password[i]);
+        local.failPhase = 5;
+        local.authPerformed = true;
+        if (!tcpSessionSend(authMsg, a) || !tcpSessionWait(2, 6000)) { tcpSessionClose(); if (outResult) *outResult = local; return false; }
+        const uint8_t* areply = reinterpret_cast<const uint8_t*>(tcpRxBuffer) + tcpConsumed;
+        uint8_t authStatus = areply[1];
+        tcpConsumed = static_cast<uint16_t>(tcpConsumed + 2);
+        if (authStatus != 0x00) { local.failPhase = 6; tcpSessionClose(); if (outResult) *outResult = local; return false; }
+        local.authOk = true;
+    } else if (selMethod == 0x00) {
+        local.authOk = true;
+    } else {
+        local.failPhase = 3; tcpSessionClose(); if (outResult) *outResult = local; return false;
+    }
+
+    // 4. CONNECT request: VER CMD RSV ATYP DST.ADDR DST.PORT.
+    static uint8_t connReq[262];
+    uint16_t c = 0;
+    connReq[c++] = 0x05; // VER
+    connReq[c++] = 0x01; // CMD = CONNECT
+    connReq[c++] = 0x00; // RSV
+    if (useDomain) {
+        connReq[c++] = 0x03;
+        connReq[c++] = static_cast<uint8_t>(domLen);
+        for (uint16_t i = 0; i < domLen; i++) connReq[c++] = static_cast<uint8_t>(destHost[i]);
+    } else {
+        connReq[c++] = 0x01;
+        wr32(connReq + c, destIp); c = static_cast<uint16_t>(c + 4);
+    }
+    wr16(connReq + c, destPort); c = static_cast<uint16_t>(c + 2);
+    local.failPhase = 7;
+    if (!tcpSessionSend(connReq, c)) { tcpSessionClose(); if (outResult) *outResult = local; return false; }
+    Serial::writeString("[net] SOCKS5 CONNECT sent\n");
+
+    // 5. CONNECT reply. Length depends on the bound-address type.
+    local.failPhase = 8;
+    if (!tcpSessionWait(4, 8000)) { tcpSessionClose(); if (outResult) *outResult = local; return false; }
+    const uint8_t* rep = reinterpret_cast<const uint8_t*>(tcpRxBuffer) + tcpConsumed;
+    uint8_t atyp = rep[3];
+    uint16_t replyTotal = 0;
+    if (atyp == 0x01) {
+        replyTotal = 4 + 4 + 2;          // IPv4
+    } else if (atyp == 0x04) {
+        replyTotal = 4 + 16 + 2;         // IPv6
+    } else if (atyp == 0x03) {           // domain: byte 4 holds the length
+        if (!tcpSessionWait(5, 4000)) { tcpSessionClose(); if (outResult) *outResult = local; return false; }
+        rep = reinterpret_cast<const uint8_t*>(tcpRxBuffer) + tcpConsumed;
+        replyTotal = static_cast<uint16_t>(4 + 1 + rep[4] + 2);
+    } else {
+        tcpSessionClose(); if (outResult) *outResult = local; return false;
+    }
+    if (!tcpSessionWait(replyTotal, 4000)) { tcpSessionClose(); if (outResult) *outResult = local; return false; }
+    rep = reinterpret_cast<const uint8_t*>(tcpRxBuffer) + tcpConsumed;
+    local.replyCode = rep[1];
+    local.boundAtyp = atyp;
+    if (atyp == 0x01) {
+        local.boundIp = rd32(rep + 4);
+        local.boundPort = rd16(rep + 8);
+    } else if (atyp == 0x03) {
+        local.boundPort = rd16(rep + 5 + rep[4]);
+    } else if (atyp == 0x04) {
+        local.boundPort = rd16(rep + 20);
+    }
+    tcpConsumed = static_cast<uint16_t>(tcpConsumed + replyTotal);
+    if (local.replyCode != 0x00) { local.failPhase = 9; tcpSessionClose(); if (outResult) *outResult = local; return false; }
+    local.connectOk = true;
+    local.failPhase = 0;
+    Serial::writeString("[net] SOCKS5 tunnel established\n");
+
+    // 6. Optional application exchange over the open tunnel.
+    if (appData && appLen > 0) {
+        if (tcpSessionSend(appData, appLen)) {
+            uint16_t got = tcpSessionDrain(outResponse, outCap, 600, 8000);
+            local.appResponseLen = got;
+            if (outLen) *outLen = got;
+        }
+    }
+
+    tcpSessionClose();
+    if (outResult) *outResult = local;
+    return local.connectOk;
 }

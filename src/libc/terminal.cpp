@@ -612,6 +612,8 @@ void Terminal::processCommand(const char* cmd) {
         putString("  http    - Fetch / over TCP port 80, example: http example.com\n");
         putString("  curl    - HTTP client: curl [-X METHOD] http://host[:port]/path [body]\n");
         putString("            Methods: GET POST PUT PATCH DELETE HEAD OPTIONS TRACE CONNECT\n");
+        putString("  socks5  - Tunnel TCP through an external SOCKS5 proxy (RFC 1928)\n");
+        putString("            example: socks5 10.0.2.2 9050 example.com 80 http\n");
         putString("  tor     - Tor control: status | bootstrap | consensus | tls | circuit\n");
         putString("  securechat - Onion-only secure chat control, example: securechat status\n");
     } else if (strcmp(command, "mrhakos") == 0) {
@@ -672,6 +674,8 @@ void Terminal::processCommand(const char* cmd) {
         cmdHttp(args);
     } else if (strcmp(command, "curl") == 0) {
         cmdCurl(args);
+    } else if (strcmp(command, "socks5") == 0) {
+        cmdSocks5(args);
     } else if (strcmp(command, "tor") == 0) {
         cmdTor(args);
     } else if (strcmp(command, "securechat") == 0) {
@@ -1521,6 +1525,210 @@ void Terminal::cmdCurl(const char* args) {
     u32ToDec(static_cast<uint32_t>(r), num, sizeof(num)); putString("  Request bytes: "); putString(num); putString("\n");
     if (resp[0]) { putString(resp); putString("\n"); }
     else putString("  Connected, but no HTTP data received\n");
+}
+
+static bool parsePort16(const char* text, uint16_t* out) {
+    if (!text || text[0] == '\0' || !out) return false;
+    uint32_t port = 0;
+    for (int j = 0; text[j]; j++) {
+        if (text[j] < '0' || text[j] > '9') return false;
+        port = port * 10u + static_cast<uint32_t>(text[j] - '0');
+        if (port > 65535u) return false;
+    }
+    if (port == 0) return false;
+    *out = static_cast<uint16_t>(port);
+    return true;
+}
+
+static const char* socks5ReplyName(uint8_t rep) {
+    switch (rep) {
+        case 0x00: return "succeeded";
+        case 0x01: return "general SOCKS server failure";
+        case 0x02: return "connection not allowed by ruleset";
+        case 0x03: return "network unreachable";
+        case 0x04: return "host unreachable";
+        case 0x05: return "connection refused";
+        case 0x06: return "TTL expired";
+        case 0x07: return "command not supported";
+        case 0x08: return "address type not supported";
+        default:   return "unknown reply code";
+    }
+}
+
+static const char* socks5PhaseName(uint8_t phase) {
+    switch (phase) {
+        case 0: return "complete";
+        case 1: return "TCP connect to proxy";
+        case 2: return "greeting / method selection";
+        case 3: return "no acceptable auth method offered by proxy";
+        case 4: return "proxy required username/password but none was given";
+        case 5: return "username/password exchange";
+        case 6: return "username/password rejected";
+        case 7: return "CONNECT request send";
+        case 8: return "CONNECT reply parse";
+        case 9: return "CONNECT rejected by proxy";
+        default: return "unknown";
+    }
+}
+
+void Terminal::cmdSocks5(const char* args) {
+    putString("\nSOCKS5 proxy tunnel\n");
+    putString("  Transport: TCP CONNECT through an external SOCKS5 proxy (RFC 1928 / 1929)\n");
+    putString("  Link: runs over the DHCP-configured Ethernet; domain targets resolve at the proxy\n");
+
+    if (!network) { putString("  Network subsystem unavailable\n"); return; }
+    const NetworkInfo& info = network->getInfo();
+    if (!info.rtl8139Present || !info.rxEnabled) { putString("  Network: blocked; Ethernet is not online\n"); return; }
+    if (info.ipAddress == 0 || info.gatewayIp == 0) { putString("  Network: blocked; run dhcp first\n"); return; }
+
+    static char username[64];
+    static char password[64];
+    static char proxyText[64];
+    static char proxyPortText[8];
+    static char destText[128];
+    static char destPortText[8];
+    static char payload[256];
+    username[0] = '\0'; password[0] = '\0';
+    proxyText[0] = '\0'; proxyPortText[0] = '\0';
+    destText[0] = '\0'; destPortText[0] = '\0'; payload[0] = '\0';
+
+    int i = 0;
+    while (args[i] == ' ') i++;
+    if (args[i] == '\0') {
+        putString("  Usage:\n");
+        putString("    socks5 [-u user:pass] <proxyIp> <proxyPort> <destHost|destIp> <destPort> [http|text...]\n");
+        putString("  Examples:\n");
+        putString("    socks5 10.0.2.2 9050 example.com 80 http\n");
+        putString("    socks5 -u alice:secret 10.0.2.2 1080 1.1.1.1 80 http\n");
+        return;
+    }
+
+    // Optional -u user:pass (the proxy is trusted/local, so credentials stay local).
+    if (args[i] == '-' && args[i + 1] == 'u' && (args[i + 2] == ' ' || args[i + 2] == '\0')) {
+        i += 2;
+        while (args[i] == ' ') i++;
+        int u = 0;
+        while (args[i] != ':' && args[i] != ' ' && args[i] != '\0' && u < 63) username[u++] = args[i++];
+        username[u] = '\0';
+        if (args[i] == ':') {
+            i++;
+            int pw = 0;
+            while (args[i] != ' ' && args[i] != '\0' && pw < 63) password[pw++] = args[i++];
+            password[pw] = '\0';
+        }
+        while (args[i] == ' ') i++;
+    }
+
+    int p = 0; while (args[i] != ' ' && args[i] != '\0' && p < 63) proxyText[p++] = args[i++]; proxyText[p] = '\0';
+    while (args[i] == ' ') i++;
+    int pp = 0; while (args[i] != ' ' && args[i] != '\0' && pp < 7) proxyPortText[pp++] = args[i++]; proxyPortText[pp] = '\0';
+    while (args[i] == ' ') i++;
+    int d = 0; while (args[i] != ' ' && args[i] != '\0' && d < 127) destText[d++] = args[i++]; destText[d] = '\0';
+    while (args[i] == ' ') i++;
+    int dp = 0; while (args[i] != ' ' && args[i] != '\0' && dp < 7) destPortText[dp++] = args[i++]; destPortText[dp] = '\0';
+    while (args[i] == ' ') i++;
+    int pl = 0; while (args[i] != '\0' && pl < 255) payload[pl++] = args[i++]; payload[pl] = '\0';
+
+    if (proxyText[0] == '\0' || proxyPortText[0] == '\0' || destText[0] == '\0' || destPortText[0] == '\0') {
+        putString("  Usage: socks5 [-u user:pass] <proxyIp> <proxyPort> <destHost|destIp> <destPort> [http|text...]\n");
+        return;
+    }
+
+    uint32_t proxyIp = 0;
+    if (!network->parseIp(proxyText, &proxyIp)) {
+        putString("  Resolving proxy "); putString(proxyText); putString("...\n");
+        if (!network->resolveDnsA(proxyText, &proxyIp)) { putString("  Proxy DNS lookup failed\n"); return; }
+    }
+    uint16_t proxyPort = 0;
+    if (!parsePort16(proxyPortText, &proxyPort)) { putString("  Proxy port must be 1..65535\n"); return; }
+    uint16_t destPort = 0;
+    if (!parsePort16(destPortText, &destPort)) { putString("  Destination port must be 1..65535\n"); return; }
+
+    // A literal IPv4 destination uses ATYP 0x01; anything else is a domain (ATYP 0x03)
+    // that the proxy resolves, which is what keeps the lookup off the local link.
+    uint32_t destIp = 0;
+    bool destIsIp = network->parseIp(destText, &destIp);
+
+    // Build the optional application payload sent once the tunnel is open.
+    static uint8_t appBuf[512];
+    uint16_t appLen = 0;
+    bool wantHttp = (strcmp(payload, "http") == 0 || strcmp(payload, "HTTP") == 0);
+    if (wantHttp) {
+        int r = 0;
+        const char* a1 = "GET / HTTP/1.0\r\nHost: ";
+        for (int j = 0; a1[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(a1[j]);
+        for (int j = 0; destText[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(destText[j]);
+        const char* a2 = "\r\nUser-Agent: MrHakOS-socks5/0.1\r\nConnection: close\r\n\r\n";
+        for (int j = 0; a2[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(a2[j]);
+        appLen = static_cast<uint16_t>(r);
+    } else if (payload[0] != '\0') {
+        int r = 0;
+        for (int j = 0; payload[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(payload[j]);
+        appLen = static_cast<uint16_t>(r);
+    }
+
+    static char num[16];
+    putString("  Proxy: "); putString(proxyText); putString(":"); putString(proxyPortText);
+    putString("   Auth: "); putString(username[0] ? "username/password\n" : "none\n");
+    putString("  Target: "); putString(destText); putString(":"); putString(destPortText);
+    putString(destIsIp ? "  (ATYP ipv4)\n" : "  (ATYP domain; resolved at proxy)\n");
+    putString("  Connecting through proxy...\n");
+
+    static uint8_t resp[2048];
+    uint16_t respLen = 0;
+    Socks5Result res;
+    network->socks5Connect(proxyIp, proxyPort,
+                           destIsIp ? static_cast<const char*>(0) : destText,
+                           destIsIp ? destIp : 0u,
+                           destPort,
+                           username[0] ? username : static_cast<const char*>(0),
+                           password[0] ? password : static_cast<const char*>(0),
+                           appLen ? appBuf : static_cast<const uint8_t*>(0), appLen,
+                           resp, static_cast<uint16_t>(sizeof(resp) - 1), &respLen, &res);
+
+    putString("  Proxy TCP: "); putString(res.tcpConnected ? "connected\n" : "failed\n");
+    if (res.methodSelected) {
+        putString("  Method: ");
+        if (res.method == 0x00) putString("no-auth\n");
+        else if (res.method == 0x02) putString("username/password\n");
+        else if (res.method == 0xFF) putString("none acceptable\n");
+        else { u32ToHex(res.method, num, sizeof(num)); putString(num); putString("\n"); }
+    }
+    if (res.authPerformed) { putString("  Auth: "); putString(res.authOk ? "accepted\n" : "rejected\n"); }
+    if (res.tcpConnected) {
+        putString("  CONNECT: ");
+        if (res.connectOk) { putString("succeeded\n"); }
+        else { putString(socks5ReplyName(res.replyCode)); putString("\n"); }
+    }
+    if (res.connectOk && res.boundAtyp == 0x01 && res.boundIp != 0) {
+        char bound[16];
+        network->formatIp(res.boundIp, bound, sizeof(bound));
+        putString("  Bound: "); putString(bound); putString(":");
+        u32ToDec(res.boundPort, num, sizeof(num)); putString(num); putString("\n");
+    }
+
+    if (!res.connectOk) {
+        putString("  Stopped at: "); putString(socks5PhaseName(res.failPhase)); putString("\n");
+        putString("  Result: tunnel not established (fail-closed; no direct fallback attempted)\n");
+        return;
+    }
+
+    putString("  Tunnel: established via SOCKS5 CONNECT\n");
+    if (appLen) {
+        u32ToDec(res.appResponseLen, num, sizeof(num));
+        putString("  Response ("); putString(num); putString(" bytes):\n");
+        if (res.appResponseLen) {
+            uint16_t n = res.appResponseLen;
+            if (n > sizeof(resp) - 1) n = static_cast<uint16_t>(sizeof(resp) - 1);
+            resp[n] = 0;
+            putString(reinterpret_cast<const char*>(resp));
+            putString("\n");
+        } else {
+            putString("  Tunnel open, but no application data was received\n");
+        }
+    } else {
+        putString("  No application payload sent; add 'http' or raw text to fetch through the tunnel\n");
+    }
 }
 
 void Terminal::cmdTor(const char* args) {

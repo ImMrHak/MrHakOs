@@ -79,6 +79,7 @@ A fully functional operating system written from scratch in C++ and Assembly, fe
 - **RTL8111/RTL8168/RTL8169** driver (Realtek Gigabit — real hardware descriptor-ring driver)
 - Ethernet frame TX/RX
 - ARP, IPv4 (static + DHCP), ICMP (ping + traceroute), UDP, DNS, TCP (client), HTTP GET
+- SOCKS5 client transport (RFC 1928/1929): tunnel TCP through an external proxy (e.g. Tor), with no-auth or username/password and IPv4/domain targets
 
 ---
 
@@ -311,6 +312,7 @@ The interactive command interpreter. It owns the main run loop and dispatches us
 | `dns <hostname>` | `cmdDns()` | DNS A-record lookup via UDP port 53 |
 | `tcp <host> <port> <text>` | `cmdTcp()` | Minimal TCP: SYN → SYN-ACK → ACK → PSH/ACK → FIN |
 | `http <host>` | `cmdHttp()` | HTTP GET `/` on port 80; print first 512 bytes of response |
+| `socks5 <proxy> <port> <dst> <dport> [http\|text]` | `cmdSocks5()` | Tunnel a TCP connection through an external SOCKS5 proxy (RFC 1928/1929: no-auth or username/password, CONNECT, IPv4/domain target) |
 | `tor <status|bootstrap>` | `cmdTor()` | Fail-closed Tor bootstrap control; fetches a Tor directory consensus sample and counts relay/Guard/Exit entries in the response buffer |
 | `securechat <cmd>` | `cmdSecurechat()` | Onion-only secure chat control; refuses chat traffic until native Tor circuits/streams exist |
 | `kbd` | `cmdKbd()` | Print IRQ1 vs. polled scancode counters (USB/legacy keyboard debug) |
@@ -744,6 +746,8 @@ udp 10.0.2.2 hello-from-mrhakos  # Send text via UDP to port 9001
 dns example.com                   # DNS A-record lookup
 tcp 10.0.2.2 8080 hello           # TCP client: send text and close
 http 1.1.1.1                      # HTTP GET / on port 80, print response
+socks5 10.0.2.2 9050 example.com 80 http   # Tunnel an HTTP GET through a SOCKS5 proxy
+socks5 -u user:pass 10.0.2.2 1080 1.1.1.1 80 http   # SOCKS5 with username/password auth
 netpoll                           # Manually drain the NIC RX ring once
 tor status                        # Show Tor bootstrap/circuit state
 tor bootstrap                     # Fetch and parse a Tor directory consensus sample from moria1
@@ -831,6 +835,58 @@ Inside MrHakOS:
 ```bash
 tcp 10.0.2.2 8080 hello-tcp-from-mrhakos
 ```
+
+### SOCKS5 proxy tunnel
+
+MrHakOS can tunnel a TCP connection through an external SOCKS5 proxy (RFC 1928),
+including the RFC 1929 username/password sub-negotiation. This is the standard way
+to route traffic through Tor (whose client listens on a SOCKS port, default `9050`),
+and it advances the "SOCKS5 transport through an external Tor proxy" roadmap item.
+
+Key properties:
+
+- **Fail-closed**: the command refuses to run until the link is up (`dhcp` first), matching the `tor`/`securechat`/`curl` policy.
+- **No local DNS leak**: when the destination is a hostname it is sent to the proxy as a SOCKS5 domain target (ATYP `0x03`) so the *proxy* resolves it. A literal IPv4 destination uses ATYP `0x01`.
+- **Auth**: pass `-u user:pass` to negotiate username/password; otherwise the no-auth method is offered.
+
+Start a proxy on the host (any SOCKS5 server works — Tor, `ssh -D`, or the bundled tester):
+
+```bash
+# Bundled minimal SOCKS5 proxy (no auth)
+python3 scripts/socks5_proxy.py --port 9050
+# …or with username/password auth
+python3 scripts/socks5_proxy.py --port 1080 --user alice --password secret
+# …or point at a real Tor SOCKS port already running on the host (9050)
+```
+
+Inside MrHakOS (QEMU user networking reaches the host gateway at `10.0.2.2`):
+
+```bash
+dhcp                                              # bring the link up first
+socks5 10.0.2.2 9050 example.com 80 http          # tunnel an HTTP GET via the proxy
+socks5 -u alice:secret 10.0.2.2 1080 1.1.1.1 80 http
+socks5 10.0.2.2 9050 example.com 443              # just prove the CONNECT tunnel opens (no payload)
+```
+
+Expected successful result:
+
+```text
+SOCKS5 proxy tunnel
+  Transport: TCP CONNECT through an external SOCKS5 proxy (RFC 1928 / 1929)
+  Proxy: 10.0.2.2:9050   Auth: none
+  Target: example.com:80  (ATYP domain; resolved at proxy)
+  Proxy TCP: connected
+  Method: no-auth
+  CONNECT: succeeded
+  Tunnel: established via SOCKS5 CONNECT
+  Response (<n> bytes):
+  HTTP/1.0 200 OK
+  ...
+```
+
+If negotiation stops early the command prints the SOCKS5 reply name (e.g. `host unreachable`,
+`connection refused`) and the exact phase it stopped at, and it never falls back to a direct
+connection.
 
 ### Tor bootstrap check
 
@@ -1036,6 +1092,19 @@ Usage: python3 scripts/udp_server.py
 
 Prints each received datagram with its source address.
 
+### `scripts/socks5_proxy.py`
+
+A minimal host-side SOCKS5 proxy used to test the `socks5` terminal command. It
+implements the no-auth and username/password (RFC 1929) methods, the `CONNECT`
+command, and IPv4 (`0x01`) and domain-name (`0x03`) targets, relaying each
+connection to the requested host. Useful when you do not have a real Tor daemon
+running but still want to exercise the kernel SOCKS5 client end to end.
+
+```
+Usage: python3 scripts/socks5_proxy.py [--host H] [--port P] [--user U --password W]
+       Default: 0.0.0.0:1080, no authentication
+```
+
 ### `scripts/build_iso_usb.sh`
 
 An interactive helper for writing `bin/mrhakos-grub.iso` to a USB drive. Includes safety checks:
@@ -1171,7 +1240,7 @@ MrHakOS is intended to behave more like a real Linux/Windows-style operating sys
 - [x] Tor directory authority bootstrap reachability check (`tor bootstrap`)
 - [ ] Native Tor TLS/cell protocol, ntor handshake, circuits, and streams
 - [ ] Onion service support for secure chat
-- [ ] SOCKS5 transport through an external Tor proxy
+- [x] SOCKS5 client transport through an external proxy (RFC 1928/1929: no-auth + username/password, CONNECT, IPv4/domain targets) via the `socks5` command
 - [ ] Native onion/Tor transport for anonymous chat
 - [ ] Secure P2P text chat over direct TCP
 - [ ] UEFI bootloader (replacing the BIOS custom bootloader)
