@@ -386,6 +386,19 @@ void Vga::update_cursor() {
 
 void Vga::set_cursor_enabled(bool enabled) {
     cursor_enabled = enabled;
+    if (use_fb) return;
+    if (!enabled) {
+        // VGA hardware cursor disable: set bit 5 in cursor-start register.
+        outb(0x3D4, 0x0A);
+        outb(0x3D5, 0x20);
+    } else {
+        // Restore a normal text-mode cursor shape, then move it to x/y.
+        outb(0x3D4, 0x0A);
+        outb(0x3D5, 0x0E);
+        outb(0x3D4, 0x0B);
+        outb(0x3D5, 0x0F);
+        update_cursor();
+    }
 }
 
 void Vga::force_update_cursor() {
