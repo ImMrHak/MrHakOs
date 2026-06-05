@@ -23,6 +23,8 @@ QEMU32 = qemu-system-i386
 QEMU64 = qemu-system-x86_64
 QEMU_SENDKEYS := scripts/qemu_sendkeys.py
 SMOKE_COMMANDS := help\nmkdir docs\ntouch hello.hak\necho hello > hello.hak\ncat hello.hak\nls\n
+# Wait long enough for the 10-second secure boot animation to hand off to the terminal.
+BOOT_READY_WAIT := 11
 
 BOOT_SRC     := $(SRC_DIR)/boot/bootloader.asm
 BOOT64_SRC   := $(SRC_DIR)/boot/bootloader64.asm
@@ -61,8 +63,8 @@ OVMF_FD      := $(firstword $(wildcard $(OVMF_PATHS)))
 
 FLOPPY_SIZE_BYTES := 1474560
 SECTOR_SIZE       := 512
-KERNEL_SECTORS_32 := 128
-KERNEL_SECTORS_64 := 128
+KERNEL_SECTORS_32 := 136
+KERNEL_SECTORS_64 := 136
 KERNEL_MAX_32     := $(shell expr $(KERNEL_SECTORS_32) \* $(SECTOR_SIZE))
 KERNEL_MAX_64     := $(shell expr $(KERNEL_SECTORS_64) \* $(SECTOR_SIZE))
 
@@ -195,13 +197,13 @@ smoke: smoke32 smoke64
 
 smoke32: all32
 	@echo "=> Interactive boot smoke test: 32-bit"
-	@(sleep 2; printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke32.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
+	@(sleep $(BOOT_READY_WAIT); printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke32.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
 	@test -s $(BUILD_DIR)/smoke32.ppm
 	@echo "=> Wrote $(BUILD_DIR)/smoke32.ppm"
 
 smoke64: all64
 	@echo "=> Interactive boot smoke test: 64-bit"
-	@(sleep 2; printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke64.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
+	@(sleep $(BOOT_READY_WAIT); printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke64.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
 	@test -s $(BUILD_DIR)/smoke64.ppm
 	@echo "=> Wrote $(BUILD_DIR)/smoke64.ppm"
 
@@ -209,7 +211,7 @@ smoke32-net: all32
 	@echo "=> Network boot smoke test: 32-bit RTL8139 + COM1"
 	@rm -f $(BUILD_DIR)/tcp32-received.log
 	@python3 scripts/tcp_smoke_server.py $(BUILD_DIR)/tcp32-received.log 8080 & server=$$!; \
-	(sleep 2; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke32-net.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial32-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
+	(sleep $(BOOT_READY_WAIT); printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke32-net.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial32-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
 	wait $$server
 	@test -s $(BUILD_DIR)/smoke32-net.ppm
 	@test -s $(BUILD_DIR)/serial32-net.log
@@ -224,7 +226,7 @@ smoke64-net: all64
 	@echo "=> Network boot smoke test: 64-bit RTL8139 + COM1"
 	@rm -f $(BUILD_DIR)/tcp64-received.log
 	@python3 scripts/tcp_smoke_server.py $(BUILD_DIR)/tcp64-received.log 8080 & server=$$!; \
-	(sleep 2; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos64\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke64-net.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial64-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
+	(sleep $(BOOT_READY_WAIT); printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos64\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke64-net.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial64-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
 	wait $$server
 	@test -s $(BUILD_DIR)/smoke64-net.ppm
 	@test -s $(BUILD_DIR)/serial64-net.log
