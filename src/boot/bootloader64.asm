@@ -44,7 +44,10 @@ main:
     mov dl, [BOOT_DRIVE]
     int 0x13
     jc disk_error
-    add bx, 512
+    mov ax, es
+    add ax, 0x20
+    mov es, ax
+    xor bx, bx
     inc byte [LOAD_SECTOR]
     cmp byte [LOAD_SECTOR], 19
     jb .next_sector
@@ -58,6 +61,9 @@ main:
     jnz .load_loop
 
 .read_success:
+
+    mov ax, 0x1000
+    mov es, ax
 
     ; Verify signature
     mov ax, [es:0]

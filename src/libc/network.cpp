@@ -1220,8 +1220,15 @@ bool Network::tcpRequestRaw(uint32_t targetIp, uint16_t destPort, const uint8_t*
     if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, lastTcpAck, 0x10, 0, 0)) return false;
     Serial::writeString("[net] TCP ACK sent\n");
     if (dataLen) {
-        if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, lastTcpAck, 0x18, data, dataLen)) return false;
-        lastTcpSeq += dataLen;
+        uint16_t off = 0;
+        while (off < dataLen) {
+            uint16_t chunk = static_cast<uint16_t>(dataLen - off);
+            if (chunk > 256) chunk = 256;
+            if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, lastTcpAck, 0x18, data + off, chunk)) return false;
+            lastTcpSeq += chunk;
+            off = static_cast<uint16_t>(off + chunk);
+            poll();
+        }
         Serial::writeString("[net] TCP data sent\n");
     }
 
@@ -1284,7 +1291,7 @@ bool Network::tcpSessionOpen(uint32_t targetIp, uint16_t destPort) {
     tcpRxBuffer[0] = 0;
 
     if (!sendTcpPacket(targetIp, lastTcpSourcePort, destPort, lastTcpSeq, 0, 0x02, 0, 0)) return false;
-    Serial::writeString("[net] SOCKS5 session SYN sent\n");
+    Serial::writeString("[net] TCP session SYN sent\n");
     uint32_t deadline = timerMillis() + 5000;
     while (timerMillis() < deadline) {
         poll();
@@ -1348,8 +1355,28 @@ uint16_t Network::tcpSessionDrain(uint8_t* out, uint16_t cap, uint32_t quietMs, 
 void Network::tcpSessionClose() {
     if (info.rtl8139Present && tcpSynAckSeen && !tcpRstSeen && !tcpFinSeen) {
         sendTcpPacket(lastTcpRemoteIp, lastTcpSourcePort, lastTcpDestPort, lastTcpSeq, lastTcpAck, 0x11, 0, 0);
-        Serial::writeString("[net] SOCKS5 session FIN sent\n");
+        Serial::writeString("[net] TCP session FIN sent\n");
     }
+}
+
+bool Network::tcpStreamOpen(uint32_t targetIp, uint16_t destPort) {
+    return tcpSessionOpen(targetIp, destPort);
+}
+
+bool Network::tcpStreamSend(const uint8_t* data, uint16_t len) {
+    return tcpSessionSend(data, len);
+}
+
+bool Network::tcpStreamWait(uint16_t needed, uint32_t totalMs) {
+    return tcpSessionWait(needed, totalMs);
+}
+
+uint16_t Network::tcpStreamDrain(uint8_t* out, uint16_t cap, uint32_t quietMs, uint32_t totalMs) {
+    return tcpSessionDrain(out, cap, quietMs, totalMs);
+}
+
+void Network::tcpStreamClose() {
+    tcpSessionClose();
 }
 
 bool Network::socks5Connect(uint32_t proxyIp, uint16_t proxyPort,

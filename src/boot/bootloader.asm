@@ -27,22 +27,39 @@ main:
     jc disk_error
     
     ; --- Step 4: Load the kernel from disk (the main operation) ---
+    ; Read one sector at a time so kernels larger than one floppy track work.
+    mov ax, 0x1000
+    mov es, ax
+    mov word [LBA], 1
+    mov cx, KERNEL_SECTORS
+.load_loop:
+    push cx
+    mov ax, [LBA]
+    xor dx, dx
+    mov bx, 36          ; 18 sectors/track * 2 heads
+    div bx              ; AX=cylinder, DX=sector inside cylinder
+    mov ch, al
+    mov ax, dx
+    xor dx, dx
+    mov bx, 18
+    div bx              ; AX=head, DX=zero-based sector
+    mov dh, al
+    mov cl, dl
+    inc cl
     mov ah, 0x02
-    ; Load the number of sectors reserved by the Makefile image-size check.
-    mov al, KERNEL_SECTORS
-    mov ch, 0
-    mov dh, 0
-    mov cl, 2
+    mov al, 1
+    xor bx, bx
     mov dl, [BOOT_DRIVE]
-    ; Set destination ES:BX to 0x1000:0000 (physical 0x10000)
-    mov bx, 0x1000
-    mov es, bx
-    mov bx, 0
-    
     int 0x13
-    jnc .read_success
-    ; If the read fails, hang with an error message.
-    jmp disk_error
+    jc disk_error
+    mov ax, es
+    add ax, 0x20        ; advance destination by 512 bytes
+    mov es, ax
+    inc word [LBA]
+    pop cx
+    loop .load_loop
+    mov ax, 0x1000
+    mov es, ax
     
 .read_success:
     ; --- Step 5: Verify that the loaded data is a valid kernel ---
@@ -107,6 +124,7 @@ kernel_error:
     jmp $
 
 BOOT_DRIVE db 0
+LBA dw 0
 
 ; GDT - Using simplified but effective definitions
 gdt_start:

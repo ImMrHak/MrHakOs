@@ -23,9 +23,13 @@ SECTIONS {
     }
     __rodata_end = .;
 
-    . = ALIGN(4096);
+    /* Keep the 64-bit flat binary inside the 128-sector BIOS loader window.
+       The early 64-bit path does not install page permissions yet, so page-aligning
+       .data here only pads the boot image without improving protection. */
+    . = ALIGN(8);
     __data_start = .;
     .data : ALIGN(8) {
+        *(.init_array*)
         *(.data*)
     }
     __data_end = .;

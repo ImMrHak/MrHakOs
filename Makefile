@@ -40,6 +40,7 @@ LIBC_CPP_SERIAL := $(SRC_DIR)/libc/serial.cpp
 LIBC_CPP_PCI    := $(SRC_DIR)/libc/pci.cpp
 LIBC_CPP_NET    := $(SRC_DIR)/libc/network.cpp
 LIBC_CPP_MEM    := $(SRC_DIR)/libc/memory.cpp
+LIBC_CPP_CRYPTO := $(SRC_DIR)/libc/crypto.cpp
 LIBC_ASM_ISR  := $(SRC_DIR)/libc/isr.asm
 LIBC_ASM_ISR64:= $(SRC_DIR)/libc/isr64.asm
 
@@ -61,8 +62,8 @@ OVMF_FD      := $(firstword $(wildcard $(OVMF_PATHS)))
 
 FLOPPY_SIZE_BYTES := 1474560
 SECTOR_SIZE       := 512
-KERNEL_SECTORS_32 := 128
-KERNEL_SECTORS_64 := 128
+KERNEL_SECTORS_32 := 160
+KERNEL_SECTORS_64 := 160
 KERNEL_MAX_32     := $(shell expr $(KERNEL_SECTORS_32) \* $(SECTOR_SIZE))
 KERNEL_MAX_64     := $(shell expr $(KERNEL_SECTORS_64) \* $(SECTOR_SIZE))
 
@@ -77,6 +78,7 @@ OBJS := \
 	$(BUILD_DIR)/filesystem.o \
 	$(BUILD_DIR)/serial.o \
 	$(BUILD_DIR)/memory.o \
+	$(BUILD_DIR)/crypto.o \
 	$(BUILD_DIR)/pci.o \
 	$(BUILD_DIR)/network.o \
 	$(BUILD_DIR)/isr.o
@@ -91,6 +93,7 @@ X64_OBJS := \
 	$(BUILD_DIR)/filesystem64.o \
 	$(BUILD_DIR)/serial64.o \
 	$(BUILD_DIR)/memory64.o \
+	$(BUILD_DIR)/crypto64.o \
 	$(BUILD_DIR)/pci64.o \
 	$(BUILD_DIR)/network64.o \
 	$(BUILD_DIR)/isr64.o
@@ -442,6 +445,16 @@ $(BUILD_DIR)/memory.o: $(LIBC_CPP_MEM)
 $(BUILD_DIR)/memory64.o: $(LIBC_CPP_MEM)
 	@mkdir -p $(BUILD_DIR)
 	@echo "=> Compiling LibC C++ (memory, x64): $<"
+	@$(X64_CXX) $(X64_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/crypto.o: $(LIBC_CPP_CRYPTO)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (crypto): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/crypto64.o: $(LIBC_CPP_CRYPTO)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (crypto, x64): $<"
 	@$(X64_CXX) $(X64_CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/pci.o: $(LIBC_CPP_PCI)

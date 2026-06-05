@@ -85,6 +85,13 @@ public:
     bool sendTcpText(uint32_t targetIp, uint16_t destPort, const char* text);
     bool tcpRequestText(uint32_t targetIp, uint16_t destPort, const char* text, char* outResponse, uint16_t outLen);
     bool tcpRequestRaw(uint32_t targetIp, uint16_t destPort, const uint8_t* data, uint16_t dataLen, uint8_t* outResponse, uint16_t outCap, uint16_t* outLen);
+    // Persistent raw TCP stream API. Native TLS/Tor needs several bidirectional
+    // exchanges on one connection; tcpRequestRaw is one-shot and closes.
+    bool tcpStreamOpen(uint32_t targetIp, uint16_t destPort);
+    bool tcpStreamSend(const uint8_t* data, uint16_t len);
+    bool tcpStreamWait(uint16_t needed, uint32_t totalMs);
+    uint16_t tcpStreamDrain(uint8_t* out, uint16_t cap, uint32_t quietMs, uint32_t totalMs);
+    void tcpStreamClose();
     // Open a TCP tunnel to destHost/destIp:destPort through a SOCKS5 proxy at
     // proxyIp:proxyPort. When destHost is non-empty it is sent as a SOCKS5
     // domain target (ATYP 0x03) so the proxy resolves it remotely (no local DNS
