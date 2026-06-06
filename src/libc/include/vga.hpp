@@ -21,9 +21,13 @@ class Vga{
     unsigned int            fb_height = 0;
     unsigned char           fb_bpp    = 0;
     bool                    use_fb    = false;
+    int                     fb_scale    = 1;   // integer font magnification
+    int                     fb_origin_x = 0;   // left pixel of the centered grid
+    int                     fb_origin_y = 0;   // top pixel of the centered grid
 
-    void fb_put_pixel(int px, int py, unsigned int rgb);
+    void fb_fill_rect(int px, int py, int w, int h, unsigned int rgb);
     void fb_draw_char(char c, int col, int row);
+    void fb_render_all();   // repaint the whole text grid from the RAM mirror
 
     public:
     // Constructor

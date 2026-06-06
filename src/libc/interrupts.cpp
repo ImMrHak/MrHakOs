@@ -50,6 +50,10 @@ volatile bool shift_pressed = false;
 static volatile bool extended_scancode = false;
 static volatile uint32_t g_keyboard_irq_scancodes = 0;
 static volatile uint32_t g_keyboard_polled_scancodes = 0;
+// Set once a real keyboard IRQ1 has been delivered. While true, pollKeyboard()
+// becomes a no-op so the ISR is the single owner of the i8042 data port and we
+// never enqueue the same scancode twice (the old duplicate-character bug).
+static volatile bool g_keyboard_irq_seen = false;
 
 // Keyboard scan code mapping (US layout) - Regular keys
 const char scancode_to_ascii[128] = {
@@ -182,11 +186,28 @@ static bool processKeyboardScancode(uint8_t scancode) {
         return false;
     }
 
-    // Ignore extended key releases/non-text keys for now. This keeps arrow keys,
-    // USB multimedia keys, etc. from turning into garbage characters.
+    // Extended (0xE0-prefixed) keys: arrows, navigation cluster, keypad nav.
+    // Map the make codes to special sentinels; ignore the 0x80 release variants.
     if (extended_scancode) {
         extended_scancode = false;
-        return false;
+        if (scancode & 0x80) {
+            return false;
+        }
+        char special = 0;
+        switch (scancode) {
+            case 0x48: special = KEY_UP;    break;
+            case 0x50: special = KEY_DOWN;  break;
+            case 0x4B: special = KEY_LEFT;  break;
+            case 0x4D: special = KEY_RIGHT; break;
+            case 0x47: special = KEY_HOME;  break;
+            case 0x4F: special = KEY_END;   break;
+            case 0x49: special = KEY_PGUP;  break;
+            case 0x51: special = KEY_PGDN;  break;
+            case 0x53: special = KEY_DEL;   break;
+            default:   return false;
+        }
+        enqueueKey(special);
+        return true;
     }
 
     if (scancode == 0x2A || scancode == 0x36) {
@@ -231,12 +252,14 @@ extern "C" void isr_timer_handler() {
 }
 
 extern "C" void isr_keyboard_handler() {
+    // Keep the ISR minimal: read the scancode, enqueue any resulting key, ack.
+    // All echoing/editing happens later in the main loop when it drains the
+    // queue. Doing slow VGA/serial work here previously allowed reentrancy and
+    // produced duplicate characters.
     uint8_t scancode = inb(0x60);
     g_keyboard_irq_scancodes++;
-    if (processKeyboardScancode(scancode) && irq_handlers[1]) {
-        Serial::writeString("[kbd] irq key\n");
-        irq_handlers[1]();
-    }
+    g_keyboard_irq_seen = true;
+    processKeyboardScancode(scancode);
     outb(0x20, 0x20);
 }
 
@@ -250,6 +273,11 @@ char getLastKey() {
 }
 
 bool pollKeyboard() {
+    // Once IRQ1 works, the ISR owns the data port; polling would double-read.
+    if (g_keyboard_irq_seen) {
+        return false;
+    }
+
     bool handled = false;
     // Drain a small burst. USB legacy emulation can deposit several translated
     // Set-1 scancodes without reliably raising IRQ1 after a GRUB boot.
@@ -266,13 +294,10 @@ bool pollKeyboard() {
         uint8_t scancode = inb(0x60);
         g_keyboard_polled_scancodes++;
         if (processKeyboardScancode(scancode)) {
-            Serial::writeString("[kbd] polled key\n");
             handled = true;
         }
     }
-    if (handled && irq_handlers[1]) {
-        irq_handlers[1]();
-    }
+    // The main loop drains the queue; do not process here.
     return handled;
 }
 

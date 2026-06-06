@@ -21,9 +21,18 @@ class Terminal{
     FileSystem* filesystem;
     Network* network;
     char inputBuffer[256];
-    int inputPosition;
+    int inputPosition;          // logical length of the line
+    int cursorPos;              // edit caret within [0, inputPosition]
+    int inputStartX;            // screen column where the input begins
+    int inputStartY;            // screen row where the input begins
     bool readingInput;
     volatile bool commandReady;
+
+    // Command history for Up/Down recall. The backing line buffer lives in .bss
+    // (see terminal.cpp) to keep this stack-allocated object small; the 64-bit
+    // boot stack sits just above the page tables and has little headroom.
+    int historyCount;           // number of stored entries
+    int historyIndex;           // browse cursor; == historyCount means "new line"
     uint8_t lastDhcpState;
     bool torDirectoryReachable;
     bool torCircuitsReady;
@@ -91,8 +100,15 @@ class Terminal{
     void putChar(char c);
     void putString(const char* str);
     void handleKeypress();
+    void handleChar(char key);
     void processCommand(const char* cmd);
     void showPrompt();
+
+    // Line-editing + history helpers
+    void redrawFrom(int from);
+    void placeCursorAt(int pos);
+    void setInputLine(const char* text);
+    void historyAdd(const char* cmd);
     
     // Keyboard handler callback (needs to be called from static function)
     void onKeypress();

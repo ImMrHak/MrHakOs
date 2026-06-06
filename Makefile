@@ -23,6 +23,8 @@ QEMU32 = qemu-system-i386
 QEMU64 = qemu-system-x86_64
 QEMU_SENDKEYS := scripts/qemu_sendkeys.py
 SMOKE_COMMANDS := help\nmkdir docs\ntouch hello.hak\necho hello > hello.hak\ncat hello.hak\nls\n
+# Wait long enough for the 10-second secure boot animation to hand off to the terminal.
+BOOT_READY_WAIT := 11
 
 BOOT_SRC     := $(SRC_DIR)/boot/bootloader.asm
 BOOT64_SRC   := $(SRC_DIR)/boot/bootloader64.asm
@@ -64,6 +66,7 @@ FLOPPY_SIZE_BYTES := 1474560
 SECTOR_SIZE       := 512
 KERNEL_SECTORS_32 := 160
 KERNEL_SECTORS_64 := 160
+
 KERNEL_MAX_32     := $(shell expr $(KERNEL_SECTORS_32) \* $(SECTOR_SIZE))
 KERNEL_MAX_64     := $(shell expr $(KERNEL_SECTORS_64) \* $(SECTOR_SIZE))
 
@@ -99,12 +102,22 @@ X64_OBJS := \
 	$(BUILD_DIR)/isr64.o
 
 INCLUDES := -I$(SRC_DIR)/libc/include
+# Every object depends on all headers (see the catch-all rule below). The
+# explicit per-object rules only list .cpp prerequisites, so without this a
+# header change (e.g. adding a class member) would leave stale objects with a
+# mismatched struct layout -> stack corruption -> black screen. Rebuilds are
+# cheap here, so depend coarsely on all headers rather than tracking each.
+HEADERS := $(wildcard $(SRC_DIR)/libc/include/*.hpp) $(wildcard $(SRC_DIR)/libc/include/*.h)
 COMMON_CXXFLAGS := -ffreestanding -Os -nostdlib -fno-exceptions -fno-rtti -fcheck-new -Wall -Wextra $(INCLUDES)
 CFLAGS   := -ffreestanding -Os -nostdlib -Wall -Wextra $(INCLUDES)
 CXXFLAGS := $(COMMON_CXXFLAGS)
 X64_CXXFLAGS := -target x86_64-elf -D__x86_64__ $(COMMON_CXXFLAGS) -mno-red-zone -mgeneral-regs-only -Wno-new-returns-null
 LDFLAGS  := -T $(SRC_DIR)/kernel/linker.ld -nostdlib
 X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
+
+# Prerequisite-only rule (no recipe): merges $(HEADERS) into every object's
+# prerequisites so any header edit forces a recompile. Prevents stale objects.
+$(OBJS) $(X64_OBJS): $(HEADERS)
 
 .PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
 
@@ -188,13 +201,13 @@ smoke: smoke32 smoke64
 
 smoke32: all32
 	@echo "=> Interactive boot smoke test: 32-bit"
-	@(sleep 2; printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke32.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
+	@(sleep $(BOOT_READY_WAIT); printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke32.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
 	@test -s $(BUILD_DIR)/smoke32.ppm
 	@echo "=> Wrote $(BUILD_DIR)/smoke32.ppm"
 
 smoke64: all64
 	@echo "=> Interactive boot smoke test: 64-bit"
-	@(sleep 2; printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke64.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
+	@(sleep $(BOOT_READY_WAIT); printf '$(SMOKE_COMMANDS)' | $(QEMU_SENDKEYS); sleep 2; echo 'screendump $(BUILD_DIR)/smoke64.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
 	@test -s $(BUILD_DIR)/smoke64.ppm
 	@echo "=> Wrote $(BUILD_DIR)/smoke64.ppm"
 
@@ -202,7 +215,7 @@ smoke32-net: all32
 	@echo "=> Network boot smoke test: 32-bit RTL8139 + COM1"
 	@rm -f $(BUILD_DIR)/tcp32-received.log
 	@python3 scripts/tcp_smoke_server.py $(BUILD_DIR)/tcp32-received.log 8080 & server=$$!; \
-	(sleep 2; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke32-net.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial32-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
+	(sleep $(BOOT_READY_WAIT); printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke32-net.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial32-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
 	wait $$server
 	@test -s $(BUILD_DIR)/smoke32-net.ppm
 	@test -s $(BUILD_DIR)/serial32-net.log
@@ -217,7 +230,7 @@ smoke64-net: all64
 	@echo "=> Network boot smoke test: 64-bit RTL8139 + COM1"
 	@rm -f $(BUILD_DIR)/tcp64-received.log
 	@python3 scripts/tcp_smoke_server.py $(BUILD_DIR)/tcp64-received.log 8080 & server=$$!; \
-	(sleep 2; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos64\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke64-net.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial64-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
+	(sleep $(BOOT_READY_WAIT); printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'arping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 1; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'udp 10.0.2.2 hello-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 1; printf 'tcp 10.0.2.2 8080 hello-tcp-from-mrhakos64\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke64-net.ppm'; echo quit) | $(QEMU64) -drive file=$(IMAGE_FILE_64),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial64-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
 	wait $$server
 	@test -s $(BUILD_DIR)/smoke64-net.ppm
 	@test -s $(BUILD_DIR)/serial64-net.log

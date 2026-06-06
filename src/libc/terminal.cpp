@@ -7,6 +7,12 @@
 
 static const char* TERMINAL_HEX = "0123456789ABCDEF";
 
+// Command-history ring buffer. Kept in .bss (not inside the stack-allocated
+// Terminal object) so the small 64-bit boot stack stays clear of the page
+// tables that live just below it.
+static const int CMD_HISTORY_MAX = 16;
+static char g_cmd_history[CMD_HISTORY_MAX][256];
+
 static void u32ToDec(uint32_t value, char* out, int outLen) {
     if (!out || outLen <= 0) {
         return;
@@ -492,6 +498,11 @@ void terminal_keyboard_handler() {
 
 Terminal::Terminal() {
     inputPosition = 0;
+    cursorPos = 0;
+    inputStartX = 0;
+    inputStartY = 0;
+    historyCount = 0;
+    historyIndex = 0;
     readingInput = false;
     commandReady = false;
     network = nullptr;
@@ -550,11 +561,18 @@ void Terminal::run() {
     putString("Network: type dhcp when the cable/router link is ready.\n");
     showPrompt();
     
-    // Wait for keyboard interrupts. Also poll the i8042 data port on every
-    // timer wake so USB keyboards exposed through firmware USB Legacy Support
-    // still work on real hardware when IRQ1 is not delivered after GRUB.
+    // Single input path: pollKeyboard() only acts if IRQ1 never arrives, and we
+    // drain the shared key queue here. Processing keys in the main loop (not the
+    // ISR) keeps the interrupt short and avoids the old duplicate-key behavior.
     while (true) {
         pollKeyboard();
+
+        char key;
+        // Stop draining as soon as Enter queues a command so any keys typed
+        // after it are handled against the fresh prompt, not the finished line.
+        while (!commandReady && (key = getLastKey()) != 0) {
+            handleChar(key);
+        }
 
         if (network) {
             network->tickDhcp();
@@ -579,11 +597,12 @@ void Terminal::run() {
 
         // Process command outside interrupt context to avoid long ISR work
         if (commandReady) {
-            Serial::writeString("[terminal] commandReady in loop\n");
             commandReady = false;
             inputBuffer[inputPosition] = '\0';
+            historyAdd(inputBuffer);
             processCommand(inputBuffer);
             inputPosition = 0;
+            cursorPos = 0;
             inputBuffer[0] = '\0';
             showPrompt();
         }
@@ -610,52 +629,182 @@ void Terminal::putString(const char* str) {
     vga->force_update_cursor();
 }
 
-void Terminal::handleKeypress() {
-    char key = getLastKey();
-    
-    if (key == 0) {
-        Serial::writeString("[terminal] key zero\n");
+// Position the hardware/visual cursor at edit offset `pos` within the line.
+void Terminal::placeCursorAt(int pos) {
+    int base = inputStartY * 80 + inputStartX;
+    int idx = base + pos;
+    if (idx < 0) idx = 0;
+    if (idx > 80 * 25 - 1) idx = 80 * 25 - 1;
+    vga->set_xy(idx % 80, idx / 80);
+    vga->force_update_cursor();
+}
+
+// Redraw the input line from edit offset `from` to the end, clear the single
+// trailing cell (left over after a deletion), then restore the caret.
+void Terminal::redrawFrom(int from) {
+    if (from < 0) from = 0;
+    int base = inputStartY * 80 + inputStartX;
+    vga->set_cursor_enabled(false);
+    for (int i = from; i < inputPosition; i++) {
+        int idx = base + i;
+        vga->putCharAt(inputBuffer[i], idx % 80, idx / 80);
+    }
+    int endIdx = base + inputPosition;
+    vga->putCharAt(' ', endIdx % 80, endIdx / 80);
+    vga->set_cursor_enabled(true);
+    placeCursorAt(cursorPos);
+}
+
+// Replace the whole visible input line with `text` (used by history recall).
+void Terminal::setInputLine(const char* text) {
+    int base = inputStartY * 80 + inputStartX;
+    int oldLen = inputPosition;
+    int n = 0;
+    while (text && text[n] && n < 255) {
+        inputBuffer[n] = text[n];
+        n++;
+    }
+    inputBuffer[n] = '\0';
+    inputPosition = n;
+    cursorPos = n;
+    vga->set_cursor_enabled(false);
+    for (int i = 0; i < inputPosition; i++) {
+        int idx = base + i;
+        vga->putCharAt(inputBuffer[i], idx % 80, idx / 80);
+    }
+    for (int i = inputPosition; i < oldLen; i++) { // erase leftover of longer line
+        int idx = base + i;
+        vga->putCharAt(' ', idx % 80, idx / 80);
+    }
+    vga->set_cursor_enabled(true);
+    placeCursorAt(cursorPos);
+}
+
+// Append a command to history (skip blanks and consecutive duplicates).
+void Terminal::historyAdd(const char* cmd) {
+    if (!cmd || cmd[0] == '\0') {
+        historyIndex = historyCount;
         return;
     }
-    Serial::writeString(readingInput ? "[terminal] reading key=0x" : "[terminal] not reading key=0x");
-    Serial::writeHex8(static_cast<uint8_t>(key));
-    Serial::writeString(" pos=0x");
-    Serial::writeHex32(static_cast<uint32_t>(inputPosition));
-    Serial::writeString("\n");
-    
-    if (readingInput) {
-        if (inputPosition < 0 || inputPosition >= 255) {
-            Serial::writeString("[terminal] input position repaired\n");
-            inputPosition = 0;
-            inputBuffer[0] = '\0';
+    if (historyCount > 0 && strcmp(g_cmd_history[historyCount - 1], cmd) == 0) {
+        historyIndex = historyCount;
+        return;
+    }
+    if (historyCount < CMD_HISTORY_MAX) {
+        int i = 0;
+        for (; cmd[i] && i < 255; i++) g_cmd_history[historyCount][i] = cmd[i];
+        g_cmd_history[historyCount][i] = '\0';
+        historyCount++;
+    } else {
+        for (int r = 1; r < CMD_HISTORY_MAX; r++) {
+            int i = 0;
+            for (; g_cmd_history[r][i]; i++) g_cmd_history[r - 1][i] = g_cmd_history[r][i];
+            g_cmd_history[r - 1][i] = '\0';
         }
-        if (key == '\n' || key == '\r') {
+        int i = 0;
+        for (; cmd[i] && i < 255; i++) g_cmd_history[CMD_HISTORY_MAX - 1][i] = cmd[i];
+        g_cmd_history[CMD_HISTORY_MAX - 1][i] = '\0';
+    }
+    historyIndex = historyCount;
+}
+
+// Thin wrapper kept for the registered IRQ callback; drains one queued key.
+void Terminal::handleKeypress() {
+    char key = getLastKey();
+    if (key != 0) handleChar(key);
+}
+
+void Terminal::handleChar(char key) {
+    if (key == 0 || !readingInput) {
+        return;
+    }
+    if (inputPosition < 0 || inputPosition > 255) {
+        inputPosition = 0;
+        inputBuffer[0] = '\0';
+    }
+    if (cursorPos < 0 || cursorPos > inputPosition) {
+        cursorPos = inputPosition;
+    }
+
+    unsigned char uc = static_cast<unsigned char>(key);
+
+    switch (uc) {
+        case '\n':
+        case '\r':
+            placeCursorAt(inputPosition);   // flush caret to end before newline
             commandReady = true;
-        } else if (key == '\b') {
-            if (inputPosition > 0) {
-                inputPosition--;
-                inputBuffer[inputPosition] = 0;
-                int cx = vga->get_x();
-                int cy = vga->get_y();
-                if (cx > 0) {
-                    cx--;
-                } else if (cy > 0) {
-                    cy--;
-                    cx = 79; // move to last column of previous line
-                } else {
-                    // Top-left corner: nothing to erase
+            return;
+
+        case '\b': // Backspace: delete char before the caret
+            if (cursorPos > 0) {
+                for (int i = cursorPos - 1; i < inputPosition - 1; i++) {
+                    inputBuffer[i] = inputBuffer[i + 1];
                 }
-                // Erase character visually and move cursor
-                vga->putCharAt(' ', cx, cy);
-                vga->set_xy(cx, cy);
+                inputPosition--;
+                cursorPos--;
+                inputBuffer[inputPosition] = '\0';
+                redrawFrom(cursorPos);
             }
-        } else if (inputPosition < 255) { // Regular character
-            inputBuffer[inputPosition] = key;
-            inputPosition++;
-            
-            // Echo the character
-            putChar(key);
+            return;
+
+        case KEY_DEL: // Delete: remove char under the caret
+            if (cursorPos < inputPosition) {
+                for (int i = cursorPos; i < inputPosition - 1; i++) {
+                    inputBuffer[i] = inputBuffer[i + 1];
+                }
+                inputPosition--;
+                inputBuffer[inputPosition] = '\0';
+                redrawFrom(cursorPos);
+            }
+            return;
+
+        case KEY_LEFT:
+            if (cursorPos > 0) { cursorPos--; placeCursorAt(cursorPos); }
+            return;
+        case KEY_RIGHT:
+            if (cursorPos < inputPosition) { cursorPos++; placeCursorAt(cursorPos); }
+            return;
+        case KEY_HOME:
+            cursorPos = 0; placeCursorAt(cursorPos);
+            return;
+        case KEY_END:
+            cursorPos = inputPosition; placeCursorAt(cursorPos);
+            return;
+
+        case KEY_UP: // recall older command
+            if (historyCount > 0 && historyIndex > 0) {
+                historyIndex--;
+                setInputLine(g_cmd_history[historyIndex]);
+            }
+            return;
+        case KEY_DOWN: // recall newer command / clear to empty line
+            if (historyIndex < historyCount) {
+                historyIndex++;
+                if (historyIndex == historyCount) setInputLine("");
+                else setInputLine(g_cmd_history[historyIndex]);
+            }
+            return;
+
+        case KEY_PGUP:
+        case KEY_PGDN:
+            // Scrollback is handled separately; ignore for line editing.
+            return;
+
+        default:
+            break;
+    }
+
+    // Printable character: insert at the caret (supports mid-line editing).
+    if (uc >= 0x20 && uc < 0x7F && inputPosition < 255) {
+        for (int i = inputPosition; i > cursorPos; i--) {
+            inputBuffer[i] = inputBuffer[i - 1];
         }
+        inputBuffer[cursorPos] = key;
+        inputPosition++;
+        inputBuffer[inputPosition] = '\0';
+        int at = cursorPos;
+        cursorPos++;
+        redrawFrom(at);
     }
 }
 
@@ -807,6 +956,13 @@ void Terminal::showPrompt() {
     // Show prompt
     const char* prompt = "MrHakOS >> ";
     putString(prompt);
+    // Remember where the editable input begins so the line editor can redraw
+    // and position the caret correctly.
+    inputStartX = vga->get_x();
+    inputStartY = vga->get_y();
+    inputPosition = 0;
+    cursorPos = 0;
+    inputBuffer[0] = '\0';
 }
 
 void Terminal::onKeypress() {
