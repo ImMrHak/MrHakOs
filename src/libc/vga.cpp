@@ -1,8 +1,8 @@
 #include <vga.hpp>
 #include <io.hpp>
 
-const int VGA_WIDTH = 80;
-const int VGA_HEIGHT = 25;
+const int VGA_WIDTH = 800;
+const int VGA_HEIGHT = 600;
 const int VGA_DEFAULT_COLOR = 0x0F;
 
 // Standard VGA 8×8 bitmap font, printable ASCII 0x20–0x7E (95 glyphs).

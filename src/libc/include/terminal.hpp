@@ -85,6 +85,7 @@ class Terminal{
     void cmdTcp(const char* args);
     void cmdHttp(const char* args);
     void cmdCurl(const char* args);
+    void cmdSocks5(const char* args);
     void cmdTor(const char* args);
     void cmdSecureChat(const char* args);
     

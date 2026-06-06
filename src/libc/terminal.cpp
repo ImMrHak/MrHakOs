@@ -3,6 +3,7 @@
 #include <interrupts.hpp>
 #include <serial.hpp>
 #include <memory.hpp>
+#include <crypto.hpp>
 
 static const char* TERMINAL_HEX = "0123456789ABCDEF";
 
@@ -247,37 +248,35 @@ static void parseTorConsensus(const char* text, TorConsensusSummary* summary) {
 }
 
 static const uint8_t TOR_TLS_CLIENT_HELLO[] = {
-    // TLS record: Handshake, TLS 1.0 record version, 0x0059 bytes
-    0x16, 0x03, 0x01, 0x00, 0x59,
-    // Handshake: ClientHello, 0x000055 bytes
-    0x01, 0x00, 0x00, 0x55,
-    // client_version TLS 1.2
-    0x03, 0x03,
-    // deterministic bring-up random; not cryptographically safe yet
-    0x4d, 0x72, 0x48, 0x61, 0x6b, 0x4f, 0x53, 0x2d,
-    0x54, 0x6f, 0x72, 0x2d, 0x54, 0x4c, 0x53, 0x31,
-    0x32, 0x2d, 0x70, 0x72, 0x6f, 0x62, 0x65, 0x2d,
-    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31,
-    // session_id length
-    0x00,
-    // cipher_suites length = 12 bytes
-    0x00, 0x0c,
-    0xc0, 0x2f, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-    0xc0, 0x30, // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-    0xc0, 0x13, // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-    0xc0, 0x14, // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
-    0x00, 0x2f, // TLS_RSA_WITH_AES_128_CBC_SHA
-    0x00, 0x35, // TLS_RSA_WITH_AES_256_CBC_SHA
-    // compression_methods: null
-    0x01, 0x00,
-    // extensions length = 29 bytes
-    0x00, 0x1d,
-    // supported_groups: secp256r1, secp384r1, x25519
-    0x00, 0x0a, 0x00, 0x08, 0x00, 0x06, 0x00, 0x17, 0x00, 0x18, 0x00, 0x1d,
-    // ec_point_formats: uncompressed
-    0x00, 0x0b, 0x00, 0x02, 0x01, 0x00,
-    // signature_algorithms: rsa_pkcs1_sha256, rsa_pkcs1_sha384, rsa_pkcs1_sha512
-    0x00, 0x0d, 0x00, 0x08, 0x00, 0x06, 0x04, 0x01, 0x05, 0x01, 0x06, 0x01
+    // OpenSSL-style TLS 1.2 ClientHello accepted by Tor ORPorts.
+    // This is only a transport probe; full native Tor still needs key schedule and encrypted records.
+    0x16, 0x03, 0x01, 0x01, 0x36, 0x01, 0x00, 0x01, 0x32, 0x03, 0x03, 0xe5,
+    0x37, 0x62, 0x49, 0x0c, 0x17, 0x9d, 0x9e, 0xa8, 0x87, 0x50, 0x79, 0xb6,
+    0x53, 0x31, 0x20, 0xe0, 0x81, 0xc4, 0x63, 0xba, 0x60, 0xb9, 0x56, 0x7c,
+    0x97, 0x2f, 0xe8, 0xa8, 0x4c, 0x06, 0xbc, 0x00, 0x00, 0xae, 0xc0, 0x2c,
+    0xc0, 0x30, 0x00, 0xa3, 0x00, 0x9f, 0xcc, 0xa9, 0xcc, 0xa8, 0xcc, 0xaa,
+    0xc0, 0xad, 0xc0, 0x9f, 0xc0, 0x5d, 0xc0, 0x61, 0xc0, 0x57, 0xc0, 0x53,
+    0x00, 0xa7, 0xc0, 0x2b, 0xc0, 0x2f, 0x00, 0xa2, 0x00, 0x9e, 0xc0, 0xac,
+    0xc0, 0x9e, 0xc0, 0x5c, 0xc0, 0x60, 0xc0, 0x56, 0xc0, 0x52, 0x00, 0xa6,
+    0xc0, 0xaf, 0xc0, 0xae, 0xc0, 0xa3, 0xc0, 0xa2, 0xc0, 0x24, 0xc0, 0x28,
+    0x00, 0x6b, 0x00, 0x6a, 0xc0, 0x73, 0xc0, 0x77, 0x00, 0xc4, 0x00, 0xc3,
+    0x00, 0x6d, 0x00, 0xc5, 0xc0, 0x23, 0xc0, 0x27, 0x00, 0x67, 0x00, 0x40,
+    0xc0, 0x72, 0xc0, 0x76, 0x00, 0xbe, 0x00, 0xbd, 0x00, 0x6c, 0x00, 0xbf,
+    0xc0, 0x0a, 0xc0, 0x14, 0x00, 0x39, 0x00, 0x38, 0x00, 0x88, 0x00, 0x87,
+    0xc0, 0x19, 0x00, 0x3a, 0x00, 0x89, 0xc0, 0x09, 0xc0, 0x13, 0x00, 0x33,
+    0x00, 0x32, 0x00, 0x9a, 0x00, 0x99, 0x00, 0x45, 0x00, 0x44, 0xc0, 0x18,
+    0x00, 0x34, 0x00, 0x9b, 0x00, 0x46, 0x00, 0x9d, 0xc0, 0x9d, 0xc0, 0x51,
+    0x00, 0x9c, 0xc0, 0x9c, 0xc0, 0x50, 0xc0, 0xa1, 0xc0, 0xa0, 0x00, 0x3d,
+    0x00, 0xc0, 0x00, 0x3c, 0x00, 0xba, 0x00, 0x35, 0x00, 0x84, 0x00, 0x2f,
+    0x00, 0x96, 0x00, 0x41, 0x01, 0x00, 0x00, 0x5b, 0xff, 0x01, 0x00, 0x01,
+    0x00, 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x0c, 0x00,
+    0x0a, 0x00, 0x1d, 0x00, 0x17, 0x00, 0x1e, 0x00, 0x18, 0x00, 0x19, 0x00,
+    0x23, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00,
+    0x0d, 0x00, 0x30, 0x00, 0x2e, 0x04, 0x03, 0x05, 0x03, 0x06, 0x03, 0x08,
+    0x07, 0x08, 0x08, 0x08, 0x09, 0x08, 0x0a, 0x08, 0x0b, 0x08, 0x04, 0x08,
+    0x05, 0x08, 0x06, 0x04, 0x01, 0x05, 0x01, 0x06, 0x01, 0x03, 0x03, 0x02,
+    0x03, 0x03, 0x01, 0x02, 0x01, 0x03, 0x02, 0x02, 0x02, 0x04, 0x02, 0x05,
+    0x02, 0x06, 0x02
 };
 
 static void byteToHex(uint8_t value, char* out) {
@@ -368,6 +367,118 @@ static const char* tlsAlertDescriptionName(uint8_t d) {
     if (d == 80) return "internal_error";
     if (d == 109) return "missing_extension";
     if (d == 112) return "unrecognized_name";
+    return "unknown";
+}
+
+
+struct TlsHandshakeScan {
+    uint16_t records;
+    uint16_t handshakes;
+    bool serverHello;
+    bool certificate;
+    bool serverKeyExchange;
+    bool serverHelloDone;
+    bool changeCipherSpec;
+    bool applicationData;
+    bool alert;
+    uint8_t lastRecordType;
+    uint8_t lastHandshakeType;
+    uint16_t lastRecordLen;
+    uint16_t firstCipherSuite;
+    uint16_t selectedCurve;
+};
+
+static void clearTlsHandshakeScan(TlsHandshakeScan* scan) {
+    if (!scan) return;
+    scan->records = 0;
+    scan->handshakes = 0;
+    scan->serverHello = false;
+    scan->certificate = false;
+    scan->serverKeyExchange = false;
+    scan->serverHelloDone = false;
+    scan->changeCipherSpec = false;
+    scan->applicationData = false;
+    scan->alert = false;
+    scan->lastRecordType = 0;
+    scan->lastHandshakeType = 0;
+    scan->lastRecordLen = 0;
+    scan->firstCipherSuite = 0;
+    scan->selectedCurve = 0;
+}
+
+static void scanTlsHandshakeRecords(const uint8_t* data, uint16_t len, TlsHandshakeScan* scan) {
+    clearTlsHandshakeScan(scan);
+    if (!data || !scan) return;
+    uint16_t off = 0;
+    while (off + 5 <= len) {
+        uint8_t typ = data[off];
+        uint16_t recLen = static_cast<uint16_t>((static_cast<uint16_t>(data[off + 3]) << 8) | data[off + 4]);
+        if (data[off + 1] != 0x03 || recLen > 18432 || off + 5u + recLen > len) break;
+        scan->records++;
+        scan->lastRecordType = typ;
+        scan->lastRecordLen = recLen;
+        if (typ == 0x14) scan->changeCipherSpec = true;
+        else if (typ == 0x15) scan->alert = true;
+        else if (typ == 0x17) scan->applicationData = true;
+        else if (typ == 0x16) {
+            uint16_t pos = static_cast<uint16_t>(off + 5);
+            uint16_t end = static_cast<uint16_t>(pos + recLen);
+            while (pos + 4 <= end) {
+                uint8_t htype = data[pos];
+                uint32_t hlen = (static_cast<uint32_t>(data[pos + 1]) << 16) |
+                                (static_cast<uint32_t>(data[pos + 2]) << 8) |
+                                static_cast<uint32_t>(data[pos + 3]);
+                if (pos + 4u + hlen > end) break;
+                scan->handshakes++;
+                scan->lastHandshakeType = htype;
+                if (htype == 0x02) {
+                    scan->serverHello = true;
+                    const uint8_t* sh = data + pos + 4;
+                    if (hlen >= 38) {
+                        uint16_t sidLen = sh[34];
+                        uint32_t csOff = 35u + sidLen;
+                        if (csOff + 1 < hlen) {
+                            scan->firstCipherSuite = static_cast<uint16_t>((static_cast<uint16_t>(sh[csOff]) << 8) | sh[csOff + 1]);
+                        }
+                    }
+                } else if (htype == 0x0b) scan->certificate = true;
+                else if (htype == 0x0c) {
+                    scan->serverKeyExchange = true;
+                    const uint8_t* sk = data + pos + 4;
+                    if (hlen >= 4 && sk[0] == 0x03) {
+                        scan->selectedCurve = static_cast<uint16_t>((static_cast<uint16_t>(sk[1]) << 8) | sk[2]);
+                    }
+                } else if (htype == 0x0e) scan->serverHelloDone = true;
+                pos = static_cast<uint16_t>(pos + 4u + hlen);
+            }
+        }
+        off = static_cast<uint16_t>(off + 5u + recLen);
+    }
+}
+
+static void printHex16ToBuf(uint16_t v, char* out) {
+    out[0] = '0'; out[1] = 'x';
+    out[2] = TERMINAL_HEX[(v >> 12) & 0xF];
+    out[3] = TERMINAL_HEX[(v >> 8) & 0xF];
+    out[4] = TERMINAL_HEX[(v >> 4) & 0xF];
+    out[5] = TERMINAL_HEX[v & 0xF];
+    out[6] = '\0';
+}
+
+static const char* tlsCipherSuiteName(uint16_t cs) {
+    if (cs == 0xC013) return "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA";
+    if (cs == 0xC014) return "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA";
+    if (cs == 0xC02F) return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256";
+    if (cs == 0xC030) return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384";
+    if (cs == 0x009C) return "TLS_RSA_WITH_AES_128_GCM_SHA256";
+    if (cs == 0x002F) return "TLS_RSA_WITH_AES_128_CBC_SHA";
+    return "unknown";
+}
+
+static const char* tlsCurveName(uint16_t curve) {
+    if (curve == 0x001D) return "x25519";
+    if (curve == 0x0017) return "secp256r1";
+    if (curve == 0x0018) return "secp384r1";
     return "unknown";
 }
 
@@ -761,7 +872,11 @@ void Terminal::processCommand(const char* cmd) {
         putString("  http    - Fetch / over TCP port 80, example: http example.com\n");
         putString("  curl    - HTTP client: curl [-X METHOD] http://host[:port]/path [body]\n");
         putString("            Methods: GET POST PUT PATCH DELETE HEAD OPTIONS TRACE CONNECT\n");
-        putString("  tor     - Tor control: status | bootstrap | consensus | tls | circuit\n");
+        putString("  socks5  - Tunnel TCP through an external SOCKS5 proxy (RFC 1928)\n");
+        putString("            example: socks5 10.0.2.2 9050 example.com 80 http\n");
+        putString("  tor     - Native Tor bootstrap: consensus + OR TLS probe + circuit gate\n");
+        putString("            stages: tor status | tor consensus | tor tls | tor crypto | tor circuit\n");
+        putString("            proxy test: tor proxy [proxyIp proxyPort]\n");
         putString("  securechat - Onion-only secure chat control, example: securechat status\n");
     } else if (strcmp(command, "mrhakos") == 0) {
         putString("\n");
@@ -821,6 +936,8 @@ void Terminal::processCommand(const char* cmd) {
         cmdHttp(args);
     } else if (strcmp(command, "curl") == 0) {
         cmdCurl(args);
+    } else if (strcmp(command, "socks5") == 0) {
+        cmdSocks5(args);
     } else if (strcmp(command, "tor") == 0) {
         cmdTor(args);
     } else if (strcmp(command, "securechat") == 0) {
@@ -1679,10 +1796,226 @@ void Terminal::cmdCurl(const char* args) {
     else putString("  Connected, but no HTTP data received\n");
 }
 
+static bool parsePort16(const char* text, uint16_t* out) {
+    if (!text || text[0] == '\0' || !out) return false;
+    uint32_t port = 0;
+    for (int j = 0; text[j]; j++) {
+        if (text[j] < '0' || text[j] > '9') return false;
+        port = port * 10u + static_cast<uint32_t>(text[j] - '0');
+        if (port > 65535u) return false;
+    }
+    if (port == 0) return false;
+    *out = static_cast<uint16_t>(port);
+    return true;
+}
+
+static const char* socks5ReplyName(uint8_t rep) {
+    switch (rep) {
+        case 0x00: return "succeeded";
+        case 0x01: return "general SOCKS server failure";
+        case 0x02: return "connection not allowed by ruleset";
+        case 0x03: return "network unreachable";
+        case 0x04: return "host unreachable";
+        case 0x05: return "connection refused";
+        case 0x06: return "TTL expired";
+        case 0x07: return "command not supported";
+        case 0x08: return "address type not supported";
+        default:   return "unknown reply code";
+    }
+}
+
+static const char* socks5PhaseName(uint8_t phase) {
+    switch (phase) {
+        case 0: return "complete";
+        case 1: return "TCP connect to proxy";
+        case 2: return "greeting / method selection";
+        case 3: return "no acceptable auth method offered by proxy";
+        case 4: return "proxy required username/password but none was given";
+        case 5: return "username/password exchange";
+        case 6: return "username/password rejected";
+        case 7: return "CONNECT request send";
+        case 8: return "CONNECT reply parse";
+        case 9: return "CONNECT rejected by proxy";
+        default: return "unknown";
+    }
+}
+
+void Terminal::cmdSocks5(const char* args) {
+    putString("\nSOCKS5 proxy tunnel\n");
+    putString("  Transport: TCP CONNECT through an external SOCKS5 proxy (RFC 1928 / 1929)\n");
+    putString("  Link: runs over the DHCP-configured Ethernet; domain targets resolve at the proxy\n");
+
+    if (!network) { putString("  Network subsystem unavailable\n"); return; }
+    const NetworkInfo& info = network->getInfo();
+    if (!info.rtl8139Present || !info.rxEnabled) { putString("  Network: blocked; Ethernet is not online\n"); return; }
+    if (info.ipAddress == 0 || info.gatewayIp == 0) { putString("  Network: blocked; run dhcp first\n"); return; }
+
+    static char username[64];
+    static char password[64];
+    static char proxyText[64];
+    static char proxyPortText[8];
+    static char destText[128];
+    static char destPortText[8];
+    static char payload[256];
+    username[0] = '\0'; password[0] = '\0';
+    proxyText[0] = '\0'; proxyPortText[0] = '\0';
+    destText[0] = '\0'; destPortText[0] = '\0'; payload[0] = '\0';
+
+    int i = 0;
+    while (args[i] == ' ') i++;
+    if (args[i] == '\0') {
+        putString("  Usage:\n");
+        putString("    socks5 [-u user:pass] <proxyIp> <proxyPort> <destHost|destIp> <destPort> [http|text...]\n");
+        putString("  Examples:\n");
+        putString("    socks5 10.0.2.2 9050 example.com 80 http\n");
+        putString("    socks5 -u alice:secret 10.0.2.2 1080 1.1.1.1 80 http\n");
+        return;
+    }
+
+    // Optional -u user:pass (the proxy is trusted/local, so credentials stay local).
+    if (args[i] == '-' && args[i + 1] == 'u' && (args[i + 2] == ' ' || args[i + 2] == '\0')) {
+        i += 2;
+        while (args[i] == ' ') i++;
+        int u = 0;
+        while (args[i] != ':' && args[i] != ' ' && args[i] != '\0' && u < 63) username[u++] = args[i++];
+        username[u] = '\0';
+        if (args[i] == ':') {
+            i++;
+            int pw = 0;
+            while (args[i] != ' ' && args[i] != '\0' && pw < 63) password[pw++] = args[i++];
+            password[pw] = '\0';
+        }
+        while (args[i] == ' ') i++;
+    }
+
+    int p = 0; while (args[i] != ' ' && args[i] != '\0' && p < 63) proxyText[p++] = args[i++]; proxyText[p] = '\0';
+    while (args[i] == ' ') i++;
+    int pp = 0; while (args[i] != ' ' && args[i] != '\0' && pp < 7) proxyPortText[pp++] = args[i++]; proxyPortText[pp] = '\0';
+    while (args[i] == ' ') i++;
+    int d = 0; while (args[i] != ' ' && args[i] != '\0' && d < 127) destText[d++] = args[i++]; destText[d] = '\0';
+    while (args[i] == ' ') i++;
+    int dp = 0; while (args[i] != ' ' && args[i] != '\0' && dp < 7) destPortText[dp++] = args[i++]; destPortText[dp] = '\0';
+    while (args[i] == ' ') i++;
+    int pl = 0; while (args[i] != '\0' && pl < 255) payload[pl++] = args[i++]; payload[pl] = '\0';
+
+    if (proxyText[0] == '\0' || proxyPortText[0] == '\0' || destText[0] == '\0' || destPortText[0] == '\0') {
+        putString("  Usage: socks5 [-u user:pass] <proxyIp> <proxyPort> <destHost|destIp> <destPort> [http|text...]\n");
+        return;
+    }
+
+    uint32_t proxyIp = 0;
+    if (!network->parseIp(proxyText, &proxyIp)) {
+        putString("  Resolving proxy "); putString(proxyText); putString("...\n");
+        if (!network->resolveDnsA(proxyText, &proxyIp)) { putString("  Proxy DNS lookup failed\n"); return; }
+    }
+    uint16_t proxyPort = 0;
+    if (!parsePort16(proxyPortText, &proxyPort)) { putString("  Proxy port must be 1..65535\n"); return; }
+    uint16_t destPort = 0;
+    if (!parsePort16(destPortText, &destPort)) { putString("  Destination port must be 1..65535\n"); return; }
+
+    // A literal IPv4 destination uses ATYP 0x01; anything else is a domain (ATYP 0x03)
+    // that the proxy resolves, which is what keeps the lookup off the local link.
+    uint32_t destIp = 0;
+    bool destIsIp = network->parseIp(destText, &destIp);
+
+    // Build the optional application payload sent once the tunnel is open.
+    static uint8_t appBuf[512];
+    uint16_t appLen = 0;
+    bool wantHttp = (strcmp(payload, "http") == 0 || strcmp(payload, "HTTP") == 0);
+    if (wantHttp) {
+        int r = 0;
+        const char* a1 = "GET / HTTP/1.0\r\nHost: ";
+        for (int j = 0; a1[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(a1[j]);
+        for (int j = 0; destText[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(destText[j]);
+        const char* a2 = "\r\nUser-Agent: MrHakOS-socks5/0.1\r\nConnection: close\r\n\r\n";
+        for (int j = 0; a2[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(a2[j]);
+        appLen = static_cast<uint16_t>(r);
+    } else if (payload[0] != '\0') {
+        int r = 0;
+        for (int j = 0; payload[j] && r < 500; j++) appBuf[r++] = static_cast<uint8_t>(payload[j]);
+        appLen = static_cast<uint16_t>(r);
+    }
+
+    static char num[16];
+    putString("  Proxy: "); putString(proxyText); putString(":"); putString(proxyPortText);
+    putString("   Auth: "); putString(username[0] ? "username/password\n" : "none\n");
+    putString("  Target: "); putString(destText); putString(":"); putString(destPortText);
+    putString(destIsIp ? "  (ATYP ipv4)\n" : "  (ATYP domain; resolved at proxy)\n");
+    putString("  Connecting through proxy...\n");
+
+    static uint8_t resp[2048];
+    uint16_t respLen = 0;
+    Socks5Result res;
+    network->socks5Connect(proxyIp, proxyPort,
+                           destIsIp ? static_cast<const char*>(0) : destText,
+                           destIsIp ? destIp : 0u,
+                           destPort,
+                           username[0] ? username : static_cast<const char*>(0),
+                           password[0] ? password : static_cast<const char*>(0),
+                           appLen ? appBuf : static_cast<const uint8_t*>(0), appLen,
+                           resp, static_cast<uint16_t>(sizeof(resp) - 1), &respLen, &res);
+
+    putString("  Proxy TCP: "); putString(res.tcpConnected ? "connected\n" : "failed\n");
+    if (res.methodSelected) {
+        putString("  Method: ");
+        if (res.method == 0x00) putString("no-auth\n");
+        else if (res.method == 0x02) putString("username/password\n");
+        else if (res.method == 0xFF) putString("none acceptable\n");
+        else { u32ToHex(res.method, num, sizeof(num)); putString(num); putString("\n"); }
+    }
+    if (res.authPerformed) { putString("  Auth: "); putString(res.authOk ? "accepted\n" : "rejected\n"); }
+    if (res.tcpConnected) {
+        putString("  CONNECT: ");
+        if (res.connectOk) { putString("succeeded\n"); }
+        else { putString(socks5ReplyName(res.replyCode)); putString("\n"); }
+    }
+    if (res.connectOk && res.boundAtyp == 0x01 && res.boundIp != 0) {
+        char bound[16];
+        network->formatIp(res.boundIp, bound, sizeof(bound));
+        putString("  Bound: "); putString(bound); putString(":");
+        u32ToDec(res.boundPort, num, sizeof(num)); putString(num); putString("\n");
+    }
+
+    if (!res.connectOk) {
+        putString("  Stopped at: "); putString(socks5PhaseName(res.failPhase)); putString("\n");
+        putString("  Result: tunnel not established (fail-closed; no direct fallback attempted)\n");
+        return;
+    }
+
+    putString("  Tunnel: established via SOCKS5 CONNECT\n");
+    if (appLen) {
+        u32ToDec(res.appResponseLen, num, sizeof(num));
+        putString("  Response ("); putString(num); putString(" bytes):\n");
+        if (res.appResponseLen) {
+            uint16_t n = res.appResponseLen;
+            if (n > sizeof(resp) - 1) n = static_cast<uint16_t>(sizeof(resp) - 1);
+            resp[n] = 0;
+            putString(reinterpret_cast<const char*>(resp));
+            putString("\n");
+        } else {
+            putString("  Tunnel open, but no application data was received\n");
+        }
+    } else {
+        putString("  No application payload sent; add 'http' or raw text to fetch through the tunnel\n");
+    }
+}
+
 void Terminal::cmdTor(const char* args) {
-    putString("\nTor consensus control\n");
-    putString("  Policy: onion-only; no clearnet fallback for apps\n");
-    putString("  Scope now: directory-consensus reachability and relay-table sample\n");
+    putString("\nNative Tor client\n");
+    putString("  Policy: native Tor only for default path; no SOCKS/proxy fallback\n");
+    putString("  State: bootstrap stages are enforced fail-closed until circuits/streams exist\n");
+
+    const char* earlyArgs = args;
+    while (*earlyArgs == ' ') earlyArgs++;
+    if (strcmp(earlyArgs, "crypto") == 0) {
+        putString("  Native Tor crypto foundation\n");
+        bool ok = crypto_self_test();
+        putString("  SHA256: "); putString(ok ? "self-test PASS\n" : "self-test FAIL\n");
+        putString("  HMAC-SHA256: "); putString(ok ? "self-test PASS\n" : "self-test FAIL\n");
+        putString("  TLS/Tor status: primitives are compiled in, but not wired into TLS records yet\n");
+        putString("  Remaining crypto: secure RNG, x25519, AES-GCM/CBC, TLS PRF/Finished, Tor relay ciphers\n");
+        return;
+    }
 
     if (!network) {
         putString("  Network: unavailable\n");
@@ -1699,7 +2032,129 @@ void Terminal::cmdTor(const char* args) {
         return;
     }
 
-    if (args[0] == '\0' || strcmp(args, "status") == 0) {
+    static char firstArg[64];
+    static char secondArg[16];
+    static char thirdArg[16];
+    firstArg[0] = '\0';
+    secondArg[0] = '\0';
+    thirdArg[0] = '\0';
+    int ai = 0;
+    while (args[ai] == ' ') ai++;
+    int fa = 0;
+    while (args[ai] != ' ' && args[ai] != '\0' && fa < 63) firstArg[fa++] = args[ai++];
+    firstArg[fa] = '\0';
+    while (args[ai] == ' ') ai++;
+    int sa = 0;
+    while (args[ai] != ' ' && args[ai] != '\0' && sa < 15) secondArg[sa++] = args[ai++];
+    secondArg[sa] = '\0';
+    while (args[ai] == ' ') ai++;
+    int ta = 0;
+    while (args[ai] != ' ' && args[ai] != '\0' && ta < 15) thirdArg[ta++] = args[ai++];
+    thirdArg[ta] = '\0';
+
+    bool proxyMode = (strcmp(firstArg, "proxy") == 0 || strcmp(firstArg, "socks") == 0 || strcmp(firstArg, "socks5") == 0);
+
+    if (proxyMode) {
+        uint32_t proxyIp = 0;
+        uint16_t proxyPort = 9050;
+        const char* proxyText = secondArg[0] ? secondArg : "10.0.2.2";
+        const char* portText = thirdArg[0] ? thirdArg : "9050";
+        if (!network->parseIp(proxyText, &proxyIp)) {
+            putString("  Proxy IP invalid. Usage: tor proxy [proxyIp proxyPort]\n");
+            putString("  Example in QEMU after starting host Tor: tor proxy 10.0.2.2 9050\n");
+            return;
+        }
+        if (!parsePort16(portText, &proxyPort)) {
+            putString("  Proxy port must be 1..65535\n");
+            return;
+        }
+
+        static uint8_t request[256];
+        static uint8_t response[2048];
+        int r = 0;
+        appendStr(reinterpret_cast<char*>(request), &r, sizeof(request), "GET /?format=text HTTP/1.0\r\n");
+        appendStr(reinterpret_cast<char*>(request), &r, sizeof(request), "Host: api.ipify.org\r\n");
+        appendStr(reinterpret_cast<char*>(request), &r, sizeof(request), "User-Agent: MrHakOS-Tor/0.1\r\n");
+        appendStr(reinterpret_cast<char*>(request), &r, sizeof(request), "Connection: close\r\n\r\n");
+
+        Socks5Result res;
+        uint16_t respLen = 0;
+        putString("  Connecting to Tor SOCKS5 proxy "); putString(proxyText); putString(":"); putString(portText); putString("...\n");
+        bool ok = network->socks5Connect(proxyIp, proxyPort,
+                                         "api.ipify.org", 0u, 80,
+                                         static_cast<const char*>(0), static_cast<const char*>(0),
+                                         request, static_cast<uint16_t>(r),
+                                         response, static_cast<uint16_t>(sizeof(response) - 1), &respLen, &res);
+        putString("  Proxy TCP: "); putString(res.tcpConnected ? "connected\n" : "failed\n");
+        if (res.methodSelected) {
+            putString("  SOCKS method: ");
+            if (res.method == 0x00) putString("no-auth\n");
+            else if (res.method == 0x02) putString("username/password\n");
+            else if (res.method == 0xFF) putString("none acceptable\n");
+            else putString("unknown\n");
+        }
+        putString("  CONNECT api.ipify.org:80: ");
+        putString(res.connectOk ? "succeeded\n" : "failed\n");
+        if (!ok || !res.connectOk) {
+            putString("  Stopped at: "); putString(socks5PhaseName(res.failPhase)); putString("\n");
+            putString("  Result: Tor not connected; fail-closed, no direct HTTP/DNS fallback attempted\n");
+            return;
+        }
+
+        response[respLen < sizeof(response) ? respLen : sizeof(response) - 1] = 0;
+        const char* body = reinterpret_cast<const char*>(response);
+        for (uint16_t j = 0; j + 3 < respLen; j++) {
+            if (response[j] == '\r' && response[j + 1] == '\n' && response[j + 2] == '\r' && response[j + 3] == '\n') {
+                body = reinterpret_cast<const char*>(response + j + 4);
+                break;
+            }
+        }
+        static char ipText[40];
+        int ipn = 0;
+        for (int j = 0; body[j] && ipn < 39; j++) {
+            char c = body[j];
+            if ((c >= '0' && c <= '9') || c == '.') ipText[ipn++] = c;
+            else if (ipn > 0) break;
+        }
+        ipText[ipn] = '\0';
+        static char num[16];
+        u32ToDec(res.appResponseLen, num, sizeof(num)); putString("  Response bytes through Tor: "); putString(num); putString("\n");
+        if (ipText[0]) {
+            putString("  Your Tor exit/public IP: "); putString(ipText); putString("\n");
+            putString("  Secure mode: ON (SOCKS5 tunnel established; remote DNS via proxy; no clearnet fallback)\n");
+        } else {
+            putString("  Tunnel worked, but IP body was not parsed. Raw response follows:\n");
+            putString(reinterpret_cast<const char*>(response)); putString("\n");
+        }
+        return;
+    }
+
+    if (firstArg[0] == '\0' || strcmp(firstArg, "native") == 0 || strcmp(firstArg, "start") == 0 || strcmp(firstArg, "auto") == 0) {
+        putString("  Native bootstrap sequence starting (no external Tor/SOCKS proxy)\n");
+        putString("  Step 1/3: directory consensus\n");
+        cmdTor("consensus");
+        if (!torDirectoryReachable || !torSelectedNickname[0]) {
+            putString("  Native Tor: stopped fail-closed at consensus/guard selection\n");
+            return;
+        }
+        putString("  Step 2/3: ORPort TLS transport probe\n");
+        cmdTor("tls");
+        if (!torTlsReady) {
+            putString("  Native Tor: stopped fail-closed at TLS transport\n");
+            return;
+        }
+        putString("  Step 3/3: circuit/stream gate\n");
+        cmdTor("circuit");
+        if (!torCircuitsReady) {
+            putString("  Native Tor: not a complete client yet; circuits/streams are still blocked\n");
+            putString("  Required next implementation: TLS key schedule, encrypted Tor cells, ntor, RELAY streams\n");
+            return;
+        }
+        putString("  Native Tor: circuits ready\n");
+        return;
+    }
+
+    if (strcmp(firstArg, "status") == 0) {
         static char num[16];
         putString("  Directory: ");
         putString(torDirectoryReachable ? "reachable\n" : "not checked/reachable yet\n");
@@ -1746,7 +2201,17 @@ void Terminal::cmdTor(const char* args) {
         return;
     }
 
-    if (strcmp(args, "tls") == 0) {
+    if (strcmp(firstArg, "crypto") == 0) {
+        putString("  Native Tor crypto foundation\n");
+        bool ok = crypto_self_test();
+        putString("  SHA256: "); putString(ok ? "self-test PASS\n" : "self-test FAIL\n");
+        putString("  HMAC-SHA256: "); putString(ok ? "self-test PASS\n" : "self-test FAIL\n");
+        putString("  TLS/Tor status: primitives are compiled in, but not wired into TLS records yet\n");
+        putString("  Remaining crypto: secure RNG, x25519, AES-GCM/CBC, TLS PRF/Finished, Tor relay ciphers\n");
+        return;
+    }
+
+    if (strcmp(firstArg, "tls") == 0) {
         if (!torSelectedNickname[0] || !torSelectedIp[0] || torSelectedOrPort == 0) {
             putString("  No selected guard yet; running tor consensus first...\n");
             cmdTor("consensus");
@@ -1762,18 +2227,32 @@ void Terminal::cmdTor(const char* args) {
             return;
         }
 
-        static uint8_t tlsResponse[512];
+        static uint8_t tlsResponse[4096];
         uint16_t tlsLen = 0;
         static char num[16];
-        putString("  TLS probe to selected Guard ORPort\n");
+        putString("  TLS stream to selected Guard ORPort\n");
         putString("    nickname: "); putString(torSelectedNickname); putString("\n");
         putString("    ip: "); putString(torSelectedIp); putString("\n");
         u32ToDec(torSelectedOrPort, num, sizeof(num)); putString("    orport: "); putString(num); putString("\n");
-        putString("  Sending TLS 1.2 ClientHello...\n");
-        bool ok = network->tcpRequestRaw(guardIp, static_cast<uint16_t>(torSelectedOrPort), TOR_TLS_CLIENT_HELLO, sizeof(TOR_TLS_CLIENT_HELLO), tlsResponse, sizeof(tlsResponse), &tlsLen);
+        putString("  Opening persistent TCP stream...\n");
+        bool ok = network->tcpStreamOpen(guardIp, static_cast<uint16_t>(torSelectedOrPort));
+        if (!ok) {
+            torTlsReady = false;
+            putString("  TLS: TCP stream open failed\n");
+            putString("  Circuits: blocked; no TLS transport\n");
+            return;
+        }
+        putString("  Sending TLS 1.2 ClientHello on kept-open stream...\n");
+        ok = network->tcpStreamSend(TOR_TLS_CLIENT_HELLO, sizeof(TOR_TLS_CLIENT_HELLO));
+        if (ok) {
+            tlsLen = network->tcpStreamDrain(tlsResponse, sizeof(tlsResponse), 900, 9000);
+        }
+        network->tcpStreamClose();
         torTlsRxLen = tlsLen;
         TlsParsedRecord rec;
         bool parsed = parseTlsRecord(tlsResponse, tlsLen, &rec);
+        TlsHandshakeScan scan;
+        scanTlsHandshakeRecords(tlsResponse, tlsLen, &scan);
         torTlsRecordType = rec.recordType;
         torTlsMajor = rec.major;
         torTlsMinor = rec.minor;
@@ -1782,27 +2261,27 @@ void Terminal::cmdTor(const char* args) {
         torTlsHandshakeLen = rec.handshakeLen;
         torTlsAlertLevel = rec.alertLevel;
         torTlsAlertDescription = rec.alertDescription;
-        torTlsHandshakeSeen = parsed && rec.isHandshake && rec.handshakeType == 0x02;
+        torTlsHandshakeSeen = scan.serverHello;
         torTlsReady = ok && torTlsHandshakeSeen;
         if (!ok) {
-            putString("  TLS: TCP/ClientHello probe failed\n");
+            putString("  TLS: ClientHello send failed\n");
             putString("  Circuits: blocked; no TLS transport\n");
             return;
         }
-        u32ToDec(tlsLen, num, sizeof(num)); putString("  TLS bytes received: "); putString(num); putString("\n");
+        u32ToDec(tlsLen, num, sizeof(num)); putString("  TLS bytes received before close: "); putString(num); putString("\n");
         if (tlsLen >= 5) {
             char hx[3];
-            putString("  TLS record header: ");
+            putString("  First TLS record header: ");
             for (int b = 0; b < 5; b++) { byteToHex(tlsResponse[b], hx); putString(hx); if (b != 4) putString(" "); }
             putString("\n");
         }
         if (parsed) {
-            putString("  TLS record: "); putString(tlsRecordTypeName(rec.recordType));
+            putString("  First TLS record: "); putString(tlsRecordTypeName(rec.recordType));
             putString(" v"); u32ToDec(rec.major, num, sizeof(num)); putString(num); putString(".");
             u32ToDec(rec.minor, num, sizeof(num)); putString(num);
             putString(" len="); u32ToDec(rec.recordLen, num, sizeof(num)); putString(num); putString("\n");
             if (rec.isHandshake) {
-                putString("  TLS handshake: "); putString(tlsHandshakeTypeName(rec.handshakeType));
+                putString("  First TLS handshake: "); putString(tlsHandshakeTypeName(rec.handshakeType));
                 putString(" len="); u32ToDec(rec.handshakeLen, num, sizeof(num)); putString(num); putString("\n");
             }
             if (rec.isAlert) {
@@ -1811,23 +2290,36 @@ void Terminal::cmdTor(const char* args) {
                 putString(" ("); putString(tlsAlertDescriptionName(rec.alertDescription)); putString(")\n");
             }
         }
+        u32ToDec(scan.records, num, sizeof(num)); putString("  TLS records scanned: "); putString(num); putString("\n");
+        u32ToDec(scan.handshakes, num, sizeof(num)); putString("  TLS handshakes scanned: "); putString(num); putString("\n");
+        putString("  ServerHello: "); putString(scan.serverHello ? "yes\n" : "no\n");
+        putString("  Certificate: "); putString(scan.certificate ? "yes\n" : "no\n");
+        putString("  ServerKeyExchange: "); putString(scan.serverKeyExchange ? "yes\n" : "no\n");
+        putString("  ServerHelloDone: "); putString(scan.serverHelloDone ? "yes\n" : "no\n");
+        if (scan.firstCipherSuite) {
+            char hx16[7]; printHex16ToBuf(scan.firstCipherSuite, hx16);
+            putString("  Selected TLS cipher: "); putString(hx16); putString(" "); putString(tlsCipherSuiteName(scan.firstCipherSuite)); putString("\n");
+        }
+        if (scan.selectedCurve) {
+            char hx16[7]; printHex16ToBuf(scan.selectedCurve, hx16);
+            putString("  Selected ECDHE group: "); putString(hx16); putString(" "); putString(tlsCurveName(scan.selectedCurve)); putString("\n");
+        }
         if (torTlsHandshakeSeen) {
-            putString("  TLS: ServerHello handshake record seen\n");
-            putString("  Tor TLS record parser proof OK\n");
-            putString("  Next: implement TLS key schedule + encrypted record IO, then Tor VERSIONS/CERTS/NETINFO cells\n");
+            putString("  TLS: live ORPort stream stays open long enough to collect server handshake records\n");
+            putString("  Next code step: add freestanding SHA256/HMAC, x25519, AES, TLS Finished, then encrypted Tor cells\n");
         } else if (parsed) {
-            putString("  TLS: record parsed, but full handshake is not established\n");
-            putString("  Next: add certificate parsing/key exchange/Finished verification\n");
+            putString("  TLS: record parsed, but no ServerHello was found in captured records\n");
+            putString("  Next: tune ClientHello/cipher list or parse more stream data\n");
         } else {
             putString("  TLS: response was not a TLS record\n");
         }
         torCircuitsReady = false;
-        putString("  Circuits: not implemented yet\n");
-        putString("  Safe result: onion apps still blocked until full TLS, Tor cells, ntor, circuits, and streams exist\n");
+        putString("  Circuits: not ready yet\n");
+        putString("  Safe result: onion apps still blocked until full TLS crypto, Tor cells, ntor, circuits, and streams exist\n");
         return;
     }
 
-    if (strcmp(args, "circuit") == 0 || strcmp(args, "circuits") == 0) {
+    if (strcmp(firstArg, "circuit") == 0 || strcmp(firstArg, "circuits") == 0) {
         putString("  Circuit bootstrap control\n");
         if (!torTlsReady) {
             putString("  TLS: not ready; run tor tls first\n");
@@ -1846,13 +2338,14 @@ void Terminal::cmdTor(const char* args) {
         return;
     }
 
-    bool wantConsensus = (strcmp(args, "bootstrap") == 0 || strcmp(args, "connect") == 0 || strcmp(args, "consensus") == 0);
+    bool wantConsensus = (strcmp(firstArg, "bootstrap") == 0 || strcmp(firstArg, "consensus") == 0);
     if (!wantConsensus) {
         putString("  Usage:\n");
         putString("    tor status\n");
         putString("    tor bootstrap\n");
         putString("    tor consensus\n");
         putString("    tor tls\n");
+        putString("    tor crypto\n");
         putString("    tor circuit\n");
         return;
     }
