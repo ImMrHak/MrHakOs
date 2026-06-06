@@ -64,6 +64,8 @@ class Terminal{
     bool torSelectedHasValid;
     bool torSelectedHasExit;
     
+    void showWelcomeBanner();
+
     // Command handling helper methods
     void cmdMkdir(const char* args);
     void cmdLs(const char* args);

@@ -555,10 +555,74 @@ void Terminal::init(Vga* vga, Interrupts* interrupts, FileSystem* filesystem, Ne
     vga->clear();
 }
 
+void Terminal::showWelcomeBanner() {
+    static const char* bdr = "================================================================================";
+    static const char* sep = "--------------------------------------------------------------------------------";
+
+    vga->set_color(0x0B);
+    putString(bdr); putString("\n");
+
+    vga->set_color(0x0A); putString("  MrHakOS");
+    vga->set_color(0x07); putString("  |  Secure Kernel v5.0  |  Zero-Trust Execution Environment\n");
+
+    vga->set_color(0x0B);
+    putString(bdr); putString("\n\n");
+
+    vga->set_color(0x08); putString("  System  : ");
+    vga->set_color(0x0F); putString("MrHakOS v5.0");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x0F); putString("x86 Protected Mode");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x0A); putString("Interrupts Active\n");
+
+    vga->set_color(0x08); putString("  Security: ");
+    vga->set_color(0x0A); putString("[OK] Memory Guard");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x0A); putString("[OK] IDT Sealed");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x0A); putString("[OK] NX Policy");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x0A); putString("[OK] W^X Active\n");
+
+    vga->set_color(0x08); putString("  Network : ");
+    vga->set_color(0x0E); putString("Not Configured");
+    vga->set_color(0x08); putString("  --  ");
+    vga->set_color(0x07); putString("run 'dhcp' to enable\n");
+
+    vga->set_color(0x08); putString("  Crypto  : ");
+    vga->set_color(0x0A); putString("AES-256-GCM");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x0A); putString("TLS 1.2");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x0A); putString("Zero-Trust ON");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x07); putString("Tor: Standby\n");
+
+    vga->set_color(0x08); putString("  Storage : ");
+    vga->set_color(0x0A); putString("RAM-only tmpfs");
+    vga->set_color(0x08); putString("  |  ");
+    vga->set_color(0x07); putString("No disk persistence\n\n");
+
+    vga->set_color(0x08); putString(sep); putString("\n");
+
+    vga->set_color(0x07); putString("  Commands: ");
+    vga->set_color(0x0E); putString("help");
+    vga->set_color(0x07); putString(" (list all)    ");
+    vga->set_color(0x0E); putString("dhcp");
+    vga->set_color(0x07); putString(" (get IP)    ");
+    vga->set_color(0x0E); putString("mrhakos");
+    vga->set_color(0x07); putString(" (sysinfo)    ");
+    vga->set_color(0x0E); putString("tor");
+    vga->set_color(0x07); putString(" (anon)\n");
+
+    vga->set_color(0x08); putString(sep); putString("\n\n");
+
+    vga->set_color(0x0F);
+}
+
 void Terminal::run() {
     readingInput = true;
-    putString("Welcome MrHakOs Terminal\n");
-    putString("Network: type dhcp when the cable/router link is ready.\n");
+    showWelcomeBanner();
     showPrompt();
     
     // Single input path: pollKeyboard() only acts if IRQ1 never arrives, and we
@@ -842,7 +906,7 @@ void Terminal::processCommand(const char* cmd) {
     // Process commands
     if (strcmp(command, "clear") == 0) {
         vga->clear();
-        putString("Welcome MrHakOs Terminal\n");
+        showWelcomeBanner();
     } else if (strcmp(command, "help") == 0) {
         putString("\n");
         putString("Available commands:\n");
@@ -953,9 +1017,10 @@ void Terminal::processCommand(const char* cmd) {
 
 
 void Terminal::showPrompt() {
-    // Show prompt
-    const char* prompt = "MrHakOS >> ";
-    putString(prompt);
+    vga->set_color(0x0A); putString("MrHakOS");
+    vga->set_color(0x08); putString("@");
+    vga->set_color(0x0B); putString("secure");
+    vga->set_color(0x0F); putString(" >> ");
     // Remember where the editable input begins so the line editor can redraw
     // and position the caret correctly.
     inputStartX = vga->get_x();

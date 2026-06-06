@@ -259,7 +259,7 @@ grubiso: $(KERNEL_ELF) check-grub-tools
 		'insmod efi_gop' \
 		'insmod video_bochs' \
 		'insmod video_cirrus' \
-		'set gfxmode=auto' \
+		'set gfxmode=1920x1080x32,1600x900x32,1366x768x32,1280x720x32,1280x1024x32,1024x768x32,auto' \
 		'set timeout=5' \
 		'set default=0' \
 		'' \

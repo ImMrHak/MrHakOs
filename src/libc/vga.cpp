@@ -1,8 +1,12 @@
 #include <vga.hpp>
 #include <io.hpp>
 
-const int VGA_WIDTH = 800;
-const int VGA_HEIGHT = 600;
+// Do not change these to a pixel resolution. 0xB8000 VGA text mode is a fixed
+// 80x25 character grid; using values like 800x600 makes the text-mode path write
+// far past VGA memory and can crash during early boot. Higher pixel resolutions
+// are requested from GRUB through the Multiboot2 framebuffer tag instead.
+const int VGA_WIDTH = 80;
+const int VGA_HEIGHT = 25;
 const int VGA_DEFAULT_COLOR = 0x0F;
 
 // Standard VGA 8×8 bitmap font, printable ASCII 0x20–0x7E (95 glyphs).
@@ -159,19 +163,14 @@ void Vga::init_fb(unsigned int addr, unsigned int pitch,
     use_fb    = true;
     cursor_enabled = false;   // hardware cursor I/O doesn't apply to framebuffer
 
-    // Magnify the 8x8 font by the largest integer factor that still fits the
-    // whole 80x25 grid on this panel, then center it. This adapts to whatever
-    // resolution the firmware reports instead of rendering tiny in the corner.
-    int sx = (int)(fb_width  / (VGA_WIDTH  * 8));
-    int sy = (int)(fb_height / (VGA_HEIGHT * 8));
-    fb_scale = sx < sy ? sx : sy;
-    if (fb_scale < 1) fb_scale = 1;
-    int grid_w = VGA_WIDTH  * 8 * fb_scale;
-    int grid_h = VGA_HEIGHT * 8 * fb_scale;
-    fb_origin_x = ((int)fb_width  - grid_w) / 2;
-    fb_origin_y = ((int)fb_height - grid_h) / 2;
-    if (fb_origin_x < 0) fb_origin_x = 0;
-    if (fb_origin_y < 0) fb_origin_y = 0;
+    // Stretch the 80x25 text grid across the whole detected framebuffer.
+    // The firmware/GRUB chooses the real pixel resolution; we adapt every text
+    // cell to that framebuffer so there are no black side/top margins. This is
+    // intentionally non-square on wide panels: it behaves like "stretch to full
+    // screen" rather than preserving the old 4:3 VGA aspect ratio.
+    fb_scale = 1;
+    fb_origin_x = 0;
+    fb_origin_y = 0;
 
     x = 0; y = 0;
     clear();
@@ -205,38 +204,35 @@ void Vga::fb_fill_rect(int px, int py, int w, int h, unsigned int rgb) {
     }
 }
 
-// Render one glyph at text cell (col,row), magnified by fb_scale and centered.
+// Render one glyph at text cell (col,row), stretched to the detected panel.
 void Vga::fb_draw_char(char c, int col, int row) {
     unsigned int fg = vga_palette[color & 0x0F];
     unsigned int bg = vga_palette[(color >> 4) & 0x0F];
     int idx = (unsigned char)c >= 0x20 && (unsigned char)c <= 0x7E
               ? (unsigned char)c - 0x20 : 0;
-    int s   = fb_scale;
-    int px0 = fb_origin_x + col * 8 * s;
-    int py0 = fb_origin_y + row * 8 * s;
 
-    if (fb_bpp == 32) {
-        for (int gy = 0; gy < 8; gy++) {
-            unsigned char bits = fb_font[idx][gy];
-            for (int syi = 0; syi < s; syi++) {
-                int yy = py0 + gy * s + syi;
-                if ((unsigned int)yy >= fb_height) continue;
-                volatile unsigned int* line = (volatile unsigned int*)
-                    (fb_base + (unsigned int)yy * fb_pitch + (unsigned int)px0 * 4);
-                int o = 0;
-                for (int gx = 0; gx < 8; gx++) {
-                    unsigned int rgb = ((bits >> (7 - gx)) & 1) ? fg : bg;
-                    for (int sxi = 0; sxi < s; sxi++) line[o++] = rgb;
-                }
-            }
-        }
-    } else {
-        for (int gy = 0; gy < 8; gy++) {
-            unsigned char bits = fb_font[idx][gy];
-            for (int gx = 0; gx < 8; gx++) {
-                unsigned int rgb = ((bits >> (7 - gx)) & 1) ? fg : bg;
-                fb_fill_rect(px0 + gx * s, py0 + gy * s, s, s, rgb);
-            }
+    // Map the fixed 80x25 character grid onto the full framebuffer using
+    // integer edge interpolation. This works for any detected width/height and
+    // consumes every pixel column/row, including widescreen modes.
+    int cell_l = ((col + 0) * (int)fb_width)  / VGA_WIDTH;
+    int cell_r = ((col + 1) * (int)fb_width)  / VGA_WIDTH;
+    int cell_t = ((row + 0) * (int)fb_height) / VGA_HEIGHT;
+    int cell_b = ((row + 1) * (int)fb_height) / VGA_HEIGHT;
+    int cell_w = cell_r - cell_l;
+    int cell_h = cell_b - cell_t;
+    if (cell_w <= 0 || cell_h <= 0) return;
+
+    for (int gy = 0; gy < 8; gy++) {
+        unsigned char bits = fb_font[idx][gy];
+        int py0 = cell_t + (gy * cell_h) / 8;
+        int py1 = cell_t + ((gy + 1) * cell_h) / 8;
+        if (py1 <= py0) py1 = py0 + 1;
+        for (int gx = 0; gx < 8; gx++) {
+            int px0 = cell_l + (gx * cell_w) / 8;
+            int px1 = cell_l + ((gx + 1) * cell_w) / 8;
+            if (px1 <= px0) px1 = px0 + 1;
+            unsigned int rgb = ((bits >> (7 - gx)) & 1) ? fg : bg;
+            fb_fill_rect(px0, py0, px1 - px0, py1 - py0, rgb);
         }
     }
 }
@@ -246,8 +242,7 @@ void Vga::fb_draw_char(char c, int col, int row) {
 void Vga::fb_render_all() {
     int savedColor = color;
     unsigned int bg = vga_palette[(savedColor >> 4) & 0x0F];
-    fb_fill_rect(fb_origin_x, fb_origin_y,
-                 VGA_WIDTH * 8 * fb_scale, VGA_HEIGHT * 8 * fb_scale, bg);
+    fb_fill_rect(0, 0, (int)fb_width, (int)fb_height, bg);
     for (int r = 0; r < VGA_HEIGHT; r++) {
         for (int cI = 0; cI < VGA_WIDTH; cI++) {
             unsigned short cell = fb_cells[r][cI];

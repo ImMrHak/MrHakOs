@@ -21,15 +21,16 @@ multiboot2_header_start:
     ; Framebuffer request tag (type 5). REQUIRED so GRUB hands the kernel a
     ; linear graphics framebuffer. On UEFI there is no VGA text mode, so without
     ; this GRUB warns "no console will be available" and 0xB8000 writes are lost.
-    ; GRUB treats width/height/depth as preferences and provides the closest mode
-    ; (on UEFI with gfxpayload=keep it passes the live GOP framebuffer).
+    ; Ask for a high widescreen framebuffer. GRUB/firmware may return this or
+    ; the closest supported real screen mode; the kernel stretches the console
+    ; across whatever width/height it actually receives.
     align 8
 fb_tag_start:
     dw 5                                  ; tag type: framebuffer
     dw 0                                  ; flags (0 = required)
     dd fb_tag_end - fb_tag_start          ; tag size (20)
-    dd 1024                               ; preferred width
-    dd 768                                ; preferred height
+    dd 1920                               ; preferred width
+    dd 1080                               ; preferred height
     dd 32                                 ; preferred bits-per-pixel
 fb_tag_end:
 
