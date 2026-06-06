@@ -56,6 +56,7 @@ class Terminal{
     uint32_t torValidCount;
     uint32_t torUsableGuardCount;
     char torSelectedNickname[32];
+    char torSelectedIdentity[48];
     char torSelectedIp[16];
     uint32_t torSelectedOrPort;
     bool torSelectedHasFast;
@@ -63,6 +64,14 @@ class Terminal{
     bool torSelectedHasRunning;
     bool torSelectedHasValid;
     bool torSelectedHasExit;
+    char torMiddleNickname[32];
+    char torMiddleIdentity[48];
+    char torMiddleIp[16];
+    uint32_t torMiddleOrPort;
+    char torExitNickname[32];
+    char torExitIdentity[48];
+    char torExitIp[16];
+    uint32_t torExitOrPort;
     
     void showWelcomeBanner();
 
@@ -89,6 +98,12 @@ class Terminal{
     void cmdCurl(const char* args);
     void cmdSocks5(const char* args);
     void cmdTor(const char* args);
+    // Full native path: guard descriptor -> TLS -> link handshake -> ntor
+    // circuit, optionally followed by a RELAY directory stream. Self-contained
+    // (opens and closes its own connection) so it never depends on the socket
+    // staying live between commands.
+    void cmdTorNative(bool withStream, bool guardReady = false);
+    void cmdTorAnon(const char* args);
     void cmdSecureChat(const char* args);
     
     public:

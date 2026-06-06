@@ -43,6 +43,8 @@ LIBC_CPP_PCI    := $(SRC_DIR)/libc/pci.cpp
 LIBC_CPP_NET    := $(SRC_DIR)/libc/network.cpp
 LIBC_CPP_MEM    := $(SRC_DIR)/libc/memory.cpp
 LIBC_CPP_CRYPTO := $(SRC_DIR)/libc/crypto.cpp
+LIBC_CPP_TLS    := $(SRC_DIR)/libc/tls.cpp
+LIBC_CPP_TOR    := $(SRC_DIR)/libc/tor.cpp
 LIBC_ASM_ISR  := $(SRC_DIR)/libc/isr.asm
 LIBC_ASM_ISR64:= $(SRC_DIR)/libc/isr64.asm
 
@@ -64,8 +66,11 @@ OVMF_FD      := $(firstword $(wildcard $(OVMF_PATHS)))
 
 FLOPPY_SIZE_BYTES := 1474560
 SECTOR_SIZE       := 512
-KERNEL_SECTORS_32 := 200
-KERNEL_SECTORS_64 := 200
+# Bumped to fit the native TLS/Tor crypto stack. The bootloader loads the
+# kernel at 0x10000 with hundreds of KiB of headroom before the stack, so the
+# only constraint is staying within the 2880-sector floppy image.
+KERNEL_SECTORS_32 := 420
+KERNEL_SECTORS_64 := 420
 
 KERNEL_MAX_32     := $(shell expr $(KERNEL_SECTORS_32) \* $(SECTOR_SIZE))
 KERNEL_MAX_64     := $(shell expr $(KERNEL_SECTORS_64) \* $(SECTOR_SIZE))
@@ -82,6 +87,8 @@ OBJS := \
 	$(BUILD_DIR)/serial.o \
 	$(BUILD_DIR)/memory.o \
 	$(BUILD_DIR)/crypto.o \
+	$(BUILD_DIR)/tls.o \
+	$(BUILD_DIR)/tor.o \
 	$(BUILD_DIR)/pci.o \
 	$(BUILD_DIR)/network.o \
 	$(BUILD_DIR)/isr.o
@@ -97,6 +104,8 @@ X64_OBJS := \
 	$(BUILD_DIR)/serial64.o \
 	$(BUILD_DIR)/memory64.o \
 	$(BUILD_DIR)/crypto64.o \
+	$(BUILD_DIR)/tls64.o \
+	$(BUILD_DIR)/tor64.o \
 	$(BUILD_DIR)/pci64.o \
 	$(BUILD_DIR)/network64.o \
 	$(BUILD_DIR)/isr64.o
@@ -119,7 +128,7 @@ X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
 # prerequisites so any header edit forces a recompile. Prevents stale objects.
 $(OBJS) $(X64_OBJS): $(HEADERS)
 
-.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
+.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net smoke32-tor smoke32-tor-anon iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
 
 all: all32
 
@@ -225,6 +234,33 @@ smoke32-net: all32
 	@grep -q 'TCP SYN-ACK received' $(BUILD_DIR)/serial32-net.log
 	@grep -q 'hello-tcp-from-mrhakos' $(BUILD_DIR)/tcp32-received.log
 	@echo "=> Wrote $(BUILD_DIR)/smoke32-net.ppm and $(BUILD_DIR)/serial32-net.log"
+
+smoke32-tor: all32
+	@echo "=> Native Tor smoke test: 32-bit RTL8139 + COM1"
+	@rm -f $(BUILD_DIR)/smoke32-tor.ppm $(BUILD_DIR)/serial32-tor.log
+	@(sleep $(BOOT_READY_WAIT); printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'tor stream\n' | $(QEMU_SENDKEYS); sleep 95; echo 'screendump $(BUILD_DIR)/smoke32-tor.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial32-tor.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
+	@test -s $(BUILD_DIR)/smoke32-tor.ppm
+	@test -s $(BUILD_DIR)/serial32-tor.log
+	@grep -q 'DHCPACK received' $(BUILD_DIR)/serial32-tor.log
+	@grep -q 'TLS 1.3 handshake established' $(BUILD_DIR)/serial32-tor.log
+	@grep -q 'ntor circuit established (guard)' $(BUILD_DIR)/serial32-tor.log
+	@grep -q 'RELAY stream data received' $(BUILD_DIR)/serial32-tor.log
+	@echo "=> Wrote $(BUILD_DIR)/smoke32-tor.ppm and $(BUILD_DIR)/serial32-tor.log"
+
+smoke32-tor-anon: all32
+	@echo "=> Native Tor 3-hop smoke test: 32-bit RTL8139 + COM1"
+	@rm -f $(BUILD_DIR)/smoke32-tor-anon.ppm $(BUILD_DIR)/serial32-tor-anon.log
+	@(sleep $(BOOT_READY_WAIT); printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'tor anon example.com /\n' | $(QEMU_SENDKEYS); sleep 180; echo 'screendump $(BUILD_DIR)/smoke32-tor-anon.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:$(BUILD_DIR)/serial32-tor-anon.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null
+	@test -s $(BUILD_DIR)/smoke32-tor-anon.ppm
+	@test -s $(BUILD_DIR)/serial32-tor-anon.log
+	@grep -q 'DHCPACK received' $(BUILD_DIR)/serial32-tor-anon.log
+	@grep -q 'TLS 1.3 handshake established' $(BUILD_DIR)/serial32-tor-anon.log
+	@grep -q 'ntor circuit established (guard)' $(BUILD_DIR)/serial32-tor-anon.log
+	@grep -q 'EXTEND2 middle hop established' $(BUILD_DIR)/serial32-tor-anon.log
+	@grep -q 'EXTEND2 exit hop established' $(BUILD_DIR)/serial32-tor-anon.log
+	@grep -q '3-hop circuit established' $(BUILD_DIR)/serial32-tor-anon.log
+	@grep -q 'exit stream data received' $(BUILD_DIR)/serial32-tor-anon.log
+	@echo "=> Wrote $(BUILD_DIR)/smoke32-tor-anon.ppm and $(BUILD_DIR)/serial32-tor-anon.log"
 
 smoke64-net: all64
 	@echo "=> Network boot smoke test: 64-bit RTL8139 + COM1"
@@ -468,6 +504,26 @@ $(BUILD_DIR)/crypto.o: $(LIBC_CPP_CRYPTO)
 $(BUILD_DIR)/crypto64.o: $(LIBC_CPP_CRYPTO)
 	@mkdir -p $(BUILD_DIR)
 	@echo "=> Compiling LibC C++ (crypto, x64): $<"
+	@$(X64_CXX) $(X64_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tls.o: $(LIBC_CPP_TLS)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (tls): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tls64.o: $(LIBC_CPP_TLS)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (tls, x64): $<"
+	@$(X64_CXX) $(X64_CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tor.o: $(LIBC_CPP_TOR)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (tor): $<"
+	@$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tor64.o: $(LIBC_CPP_TOR)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Compiling LibC C++ (tor, x64): $<"
 	@$(X64_CXX) $(X64_CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/pci.o: $(LIBC_CPP_PCI)

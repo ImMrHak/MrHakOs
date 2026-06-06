@@ -91,6 +91,10 @@ public:
     bool tcpStreamSend(const uint8_t* data, uint16_t len);
     bool tcpStreamWait(uint16_t needed, uint32_t totalMs);
     uint16_t tcpStreamDrain(uint8_t* out, uint16_t cap, uint32_t quietMs, uint32_t totalMs);
+    // Blocking "read exactly N bytes" used by the TLS/Tor record loops. Returns
+    // the number of bytes copied (== needed on success; fewer on timeout/close).
+    uint16_t tcpStreamRead(uint8_t* out, uint16_t needed, uint32_t totalMs);
+    bool tcpStreamAlive() const;
     void tcpStreamClose();
     // Open a TCP tunnel to destHost/destIp:destPort through a SOCKS5 proxy at
     // proxyIp:proxyPort. When destHost is non-empty it is sent as a SOCKS5
@@ -137,7 +141,7 @@ private:
     bool tcpDataSeen;
     uint16_t tcpRxLen;
     uint16_t tcpConsumed;
-    char tcpRxBuffer[8192];
+    char tcpRxBuffer[16384];
     bool dhcpOfferSeen;
     bool dhcpAckSeen;
     uint32_t dhcpXid;
@@ -167,6 +171,9 @@ private:
     bool tcpSessionWait(uint16_t needed, uint32_t totalMs);
     uint16_t tcpSessionDrain(uint8_t* out, uint16_t cap, uint32_t quietMs, uint32_t totalMs);
     void tcpSessionClose();
+    // Slide unconsumed receive bytes back to the front so a long-lived stream is
+    // not capped by the buffer size (TLS/Tor exchange far more than one bufferful).
+    void tcpCompact();
     void handleFrame(const uint8_t* frame, uint16_t length);
     void pollRtl8139();
     void pollRtl8169();

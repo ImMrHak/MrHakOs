@@ -698,22 +698,40 @@ void Network::handleTcp(const uint8_t* ipPacket, uint8_t ihl, uint16_t totalLen)
 
     uint16_t payloadLen = static_cast<uint16_t>(totalLen - ihl - dataOffset);
     if (payloadLen > 0) {
+        // lastTcpAck is our receive-next pointer (next absolute seq we expect).
+        // Accept only bytes at/after it, trimming the already-seen prefix of a
+        // retransmit and ignoring pure duplicates or future (gap) segments. This
+        // keeps the byte stream exact even when the network duplicates or
+        // reorders, which a TLS/Tor record framing cannot tolerate.
         const uint8_t* payload = tcp + dataOffset;
-        uint16_t copyLen = payloadLen;
-        if (copyLen > sizeof(tcpRxBuffer) - 1 - tcpRxLen) copyLen = static_cast<uint16_t>(sizeof(tcpRxBuffer) - 1 - tcpRxLen);
-        for (uint16_t i = 0; i < copyLen; i++) tcpRxBuffer[tcpRxLen++] = static_cast<char>(payload[i]);
-        tcpRxBuffer[tcpRxLen] = 0;
-        lastTcpAck = seq + payloadLen;
-        tcpDataSeen = true;
-        Serial::writeString("[net] TCP data received\n");
+        uint32_t segEnd = seq + payloadLen;
+        bool startInRange = static_cast<int32_t>(seq - lastTcpAck) <= 0;      // seq <= rcvNext
+        bool hasNew       = static_cast<int32_t>(lastTcpAck - segEnd) < 0;    // rcvNext < segEnd
+        if (startInRange && hasNew) {
+            uint32_t skip = lastTcpAck - seq;                 // already-received prefix
+            const uint8_t* fresh = payload + skip;
+            uint16_t freshLen = static_cast<uint16_t>(payloadLen - skip);
+            if (freshLen > sizeof(tcpRxBuffer) - 1 - tcpRxLen) tcpCompact();
+            uint16_t freeSpace = static_cast<uint16_t>(sizeof(tcpRxBuffer) - 1 - tcpRxLen);
+            uint16_t copyLen = freshLen < freeSpace ? freshLen : freeSpace;
+            for (uint16_t i = 0; i < copyLen; i++) tcpRxBuffer[tcpRxLen++] = static_cast<char>(fresh[i]);
+            tcpRxBuffer[tcpRxLen] = 0;
+            lastTcpAck = seq + skip + copyLen;                // advance by what we stored
+            tcpDataSeen = true;
+            Serial::writeString("[net] TCP data received\n");
+        }
+        // Always (re-)ACK our true receive-next so the peer fills any gap.
         sendTcpPacket(lastTcpRemoteIp, lastTcpSourcePort, lastTcpDestPort, lastTcpSeq, lastTcpAck, 0x10, 0, 0);
     }
 
     if (flags & 0x01) {
-        lastTcpAck = seq + payloadLen + 1;
-        tcpFinSeen = true;
-        Serial::writeString("[net] TCP FIN received\n");
-        sendTcpPacket(lastTcpRemoteIp, lastTcpSourcePort, lastTcpDestPort, lastTcpSeq, lastTcpAck, 0x10, 0, 0);
+        uint32_t finSeq = seq + payloadLen;                   // sequence the FIN occupies
+        if (static_cast<int32_t>(lastTcpAck - finSeq) >= 0) { // all data up to the FIN is in
+            if (lastTcpAck == finSeq) lastTcpAck = finSeq + 1;
+            tcpFinSeen = true;
+            Serial::writeString("[net] TCP FIN received\n");
+            sendTcpPacket(lastTcpRemoteIp, lastTcpSourcePort, lastTcpDestPort, lastTcpSeq, lastTcpAck, 0x10, 0, 0);
+        }
     }
 }
 
@@ -1359,6 +1377,15 @@ void Network::tcpSessionClose() {
     }
 }
 
+void Network::tcpCompact() {
+    if (tcpConsumed == 0) return;
+    uint16_t rem = static_cast<uint16_t>(tcpRxLen - tcpConsumed);
+    for (uint16_t i = 0; i < rem; i++) tcpRxBuffer[i] = tcpRxBuffer[tcpConsumed + i];
+    tcpRxLen = rem;
+    tcpConsumed = 0;
+    tcpRxBuffer[tcpRxLen] = 0;
+}
+
 bool Network::tcpStreamOpen(uint32_t targetIp, uint16_t destPort) {
     return tcpSessionOpen(targetIp, destPort);
 }
@@ -1377,6 +1404,23 @@ uint16_t Network::tcpStreamDrain(uint8_t* out, uint16_t cap, uint32_t quietMs, u
 
 void Network::tcpStreamClose() {
     tcpSessionClose();
+}
+
+uint16_t Network::tcpStreamRead(uint8_t* out, uint16_t needed, uint32_t totalMs) {
+    if (needed == 0) return 0;
+    tcpSessionWait(needed, totalMs);
+    uint16_t avail = static_cast<uint16_t>(tcpRxLen - tcpConsumed);
+    uint16_t n = avail < needed ? avail : needed;
+    if (out) {
+        for (uint16_t i = 0; i < n; i++) out[i] = static_cast<uint8_t>(tcpRxBuffer[tcpConsumed + i]);
+    }
+    tcpConsumed = static_cast<uint16_t>(tcpConsumed + n);
+    tcpCompact();
+    return n;
+}
+
+bool Network::tcpStreamAlive() const {
+    return tcpSynAckSeen && !tcpRstSeen && !tcpFinSeen;
 }
 
 bool Network::socks5Connect(uint32_t proxyIp, uint16_t proxyPort,
