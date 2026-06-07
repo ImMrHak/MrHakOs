@@ -9,6 +9,11 @@ static const uint16_t RTL8139_DEVICE = 0x8139;
 static const uint16_t RTL8168_DEVICE = 0x8168;
 static const uint16_t RTL8169_DEVICE = 0x8169;
 static const uint16_t RTL8161_DEVICE = 0x8161;
+static const uint16_t INTEL_VENDOR = 0x8086;
+static const uint16_t INTEL_82540EM = 0x100E; // QEMU e1000, many 8254x-style parts
+static const uint16_t INTEL_82545EM = 0x100F;
+static const uint16_t INTEL_82541PI = 0x107C;
+static const uint16_t INTEL_82574L  = 0x10D3;
 static const char* HEX = "0123456789ABCDEF";
 
 static const uint32_t DEFAULT_IP      = 0u;
@@ -28,6 +33,8 @@ static uint8_t txFrame[1536] __attribute__((aligned(4)));
 static const uint8_t NIC_NONE = 0;
 static const uint8_t NIC_RTL8139 = 1;
 static const uint8_t NIC_RTL8169 = 2;
+static const uint8_t NIC_E1000 = 3;
+static const uint8_t ARP_CACHE_SIZE = 8;
 static const uint32_t RTL_DESC_OWN = 0x80000000u;
 static const uint32_t RTL_DESC_EOR = 0x40000000u;
 static const uint32_t RTL_DESC_FS  = 0x20000000u;
@@ -81,6 +88,53 @@ static Rtl8169Desc rtl8169TxDesc[RTL8169_TX_DESC_COUNT] __attribute__((aligned(2
 static uint8_t rtl8169RxBuffers[RTL8169_RX_DESC_COUNT][RTL8169_RX_BUF_SIZE] __attribute__((aligned(16)));
 static uint8_t rtl8169TxBuffers[RTL8169_TX_DESC_COUNT][1536] __attribute__((aligned(16)));
 
+static bool e1000UseIo = false;
+static uintptr_t e1000RegBase = 0;
+static const uint16_t E1000_RX_DESC_COUNT = 16;
+static const uint16_t E1000_TX_DESC_COUNT = 8;
+static const uint16_t E1000_RX_BUF_SIZE = 2048;
+
+struct E1000RxDesc {
+    volatile uint64_t addr;
+    volatile uint16_t length;
+    volatile uint16_t checksum;
+    volatile uint8_t status;
+    volatile uint8_t errors;
+    volatile uint16_t special;
+} __attribute__((packed));
+
+struct E1000TxDesc {
+    volatile uint64_t addr;
+    volatile uint16_t length;
+    volatile uint8_t cso;
+    volatile uint8_t cmd;
+    volatile uint8_t status;
+    volatile uint8_t css;
+    volatile uint16_t special;
+} __attribute__((packed));
+
+static E1000RxDesc e1000RxDesc[E1000_RX_DESC_COUNT] __attribute__((aligned(16)));
+static E1000TxDesc e1000TxDesc[E1000_TX_DESC_COUNT] __attribute__((aligned(16)));
+static uint8_t e1000RxBuffers[E1000_RX_DESC_COUNT][E1000_RX_BUF_SIZE] __attribute__((aligned(16)));
+static uint8_t e1000TxBuffers[E1000_TX_DESC_COUNT][1536] __attribute__((aligned(16)));
+
+static uint32_t e1000Read32(uint32_t off) {
+    if (e1000UseIo) {
+        outl(static_cast<uint16_t>(e1000RegBase), off);
+        return inl(static_cast<uint16_t>(e1000RegBase + 4));
+    }
+    return *reinterpret_cast<volatile uint32_t*>(e1000RegBase + off);
+}
+
+static void e1000Write32(uint32_t off, uint32_t value) {
+    if (e1000UseIo) {
+        outl(static_cast<uint16_t>(e1000RegBase), off);
+        outl(static_cast<uint16_t>(e1000RegBase + 4), value);
+        return;
+    }
+    *reinterpret_cast<volatile uint32_t*>(e1000RegBase + off) = value;
+}
+
 static void wr16(uint8_t* p, uint16_t v) { p[0] = static_cast<uint8_t>(v >> 8); p[1] = static_cast<uint8_t>(v); }
 static void wr32(uint8_t* p, uint32_t v) { p[0] = static_cast<uint8_t>(v >> 24); p[1] = static_cast<uint8_t>(v >> 16); p[2] = static_cast<uint8_t>(v >> 8); p[3] = static_cast<uint8_t>(v); }
 static uint16_t rd16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
@@ -126,7 +180,7 @@ Network::Network() {
     rxBufferPhys = 0;
     rxOffset = 0;
     txIndex = 0;
-    arpValid = false;
+    clearArpCache();
     nextIcmpSeq = 1;
     lastEchoId = 0x484B; // HK
     lastEchoSeq = 0;
@@ -207,6 +261,15 @@ void Network::init() {
         info.pciPresent = true;
         pciDevice = device;
         initRtl8169(device);
+        return;
+    }
+    if (Pci::findDevice(INTEL_VENDOR, INTEL_82540EM, &device) ||
+        Pci::findDevice(INTEL_VENDOR, INTEL_82545EM, &device) ||
+        Pci::findDevice(INTEL_VENDOR, INTEL_82541PI, &device) ||
+        Pci::findDevice(INTEL_VENDOR, INTEL_82574L, &device)) {
+        info.pciPresent = true;
+        pciDevice = device;
+        initE1000(device);
         return;
     }
 
@@ -383,6 +446,96 @@ void Network::initRtl8169(const PciDeviceInfo& device) {
     Serial::writeString("\n");
 }
 
+void Network::initE1000(const PciDeviceInfo& device) {
+    nicKind = NIC_E1000;
+    info.rtl8139Present = true; // Historical flag means "supported Ethernet NIC" to the stack/UI.
+    info.irqLine = device.irqLine;
+    const char name[] = "Intel E1000";
+    int i = 0; for (; name[i] && i < 31; i++) info.nicName[i] = name[i]; info.nicName[i] = 0;
+
+    uint32_t bars[6] = { device.bar0, device.bar1, device.bar2, device.bar3, device.bar4, device.bar5 };
+    e1000UseIo = false;
+    e1000RegBase = 0;
+    for (int b = 0; b < 6 && e1000RegBase == 0; b++) {
+        if (bars[b] != 0 && bars[b] != 0xffffffffu && (bars[b] & 0x1) == 0) {
+            e1000RegBase = static_cast<uintptr_t>(bars[b] & 0xFFFFFFF0u);
+            e1000UseIo = false;
+        }
+    }
+    for (int b = 0; b < 6 && e1000RegBase == 0; b++) {
+        if (bars[b] != 0 && bars[b] != 0xffffffffu && (bars[b] & 0x1)) {
+            e1000RegBase = static_cast<uintptr_t>(bars[b] & 0xFFFFFFFCu);
+            e1000UseIo = true;
+        }
+    }
+    if (e1000RegBase == 0) {
+        Serial::writeString("[net] Intel E1000 found but no usable I/O or MMIO BAR is enabled\n");
+        return;
+    }
+    info.ioBase = static_cast<uint32_t>(e1000RegBase);
+
+    uint16_t cmd = Pci::readConfig16(device.bus, device.device, device.function, 0x04);
+    cmd |= 0x0007; // I/O space | memory space | bus mastering
+    Pci::writeConfig16(device.bus, device.device, device.function, 0x04, cmd);
+
+    e1000Write32(0x00D8, 0xFFFFFFFFu); // IMC: poll for now, disable interrupts
+    uint32_t ctrl = e1000Read32(0x0000);
+    e1000Write32(0x0000, ctrl | 0x00000040u); // set link up on emulated/PHY-backed parts
+
+    uint32_t ral = e1000Read32(0x5400);
+    uint32_t rah = e1000Read32(0x5404);
+    info.mac[0] = static_cast<uint8_t>(ral);
+    info.mac[1] = static_cast<uint8_t>(ral >> 8);
+    info.mac[2] = static_cast<uint8_t>(ral >> 16);
+    info.mac[3] = static_cast<uint8_t>(ral >> 24);
+    info.mac[4] = static_cast<uint8_t>(rah);
+    info.mac[5] = static_cast<uint8_t>(rah >> 8);
+
+    memset(e1000RxBuffers, 0, sizeof(e1000RxBuffers));
+    memset(e1000TxBuffers, 0, sizeof(e1000TxBuffers));
+    memset(e1000RxDesc, 0, sizeof(e1000RxDesc));
+    memset(e1000TxDesc, 0, sizeof(e1000TxDesc));
+    rxOffset = 0;
+    txIndex = 0;
+
+    for (uint16_t r = 0; r < E1000_RX_DESC_COUNT; r++) {
+        e1000RxDesc[r].addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(e1000RxBuffers[r]));
+        e1000RxDesc[r].status = 0;
+    }
+    for (uint16_t t = 0; t < E1000_TX_DESC_COUNT; t++) {
+        e1000TxDesc[t].addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(e1000TxBuffers[t]));
+        e1000TxDesc[t].status = 0x01; // DD: software may use it
+    }
+
+    uint32_t rxBase = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e1000RxDesc));
+    e1000Write32(0x2800, rxBase);
+    e1000Write32(0x2804, 0);
+    e1000Write32(0x2808, E1000_RX_DESC_COUNT * sizeof(E1000RxDesc));
+    e1000Write32(0x2810, 0);
+    e1000Write32(0x2818, E1000_RX_DESC_COUNT - 1);
+
+    uint32_t txBase = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(e1000TxDesc));
+    e1000Write32(0x3800, txBase);
+    e1000Write32(0x3804, 0);
+    e1000Write32(0x3808, E1000_TX_DESC_COUNT * sizeof(E1000TxDesc));
+    e1000Write32(0x3810, 0);
+    e1000Write32(0x3818, 0);
+    e1000Write32(0x0410, 0x0060200Au); // TIPG: conservative inter-packet gap
+    e1000Write32(0x0400, 0x010400FAu); // TCTL: enable TX, pad short packets, sane CT/COLD
+    e1000Write32(0x0100, 0x04008002u); // RCTL: enable RX, broadcast accept, strip CRC, 2048-byte buffers
+
+    info.linkUp = (e1000Read32(0x0008) & 0x00000002u) != 0;
+    info.rxEnabled = true;
+
+    Serial::writeString("[net] Intel E1000 detected at PCI ");
+    Serial::writeHex8(device.bus); Serial::writeChar(':'); Serial::writeHex8(device.device); Serial::writeChar('.'); Serial::writeHex8(device.function);
+    Serial::writeString(e1000UseIo ? " io=0x" : " mmio=0x"); Serial::writeHex32(info.ioBase);
+    Serial::writeString(" irq="); Serial::writeHex8(info.irqLine);
+    Serial::writeString(" status=0x"); Serial::writeHex32(e1000Read32(0x0008));
+    Serial::writeString(" mac="); char macText[18]; formatMac(macText, sizeof(macText)); Serial::writeString(macText);
+    Serial::writeString("\n");
+}
+
 const NetworkInfo& Network::getInfo() const { return info; }
 
 void Network::formatMac(char* out, int outLen) const {
@@ -425,6 +578,7 @@ bool Network::parseIp(const char* text, uint32_t* outIp) const {
 }
 
 bool Network::sendFrame(const uint8_t* destMac, uint16_t etherType, const uint8_t* payload, uint16_t payloadLen) {
+    if (nicKind == NIC_E1000) return sendFrameE1000(destMac, etherType, payload, payloadLen);
     if (nicKind == NIC_RTL8169) return sendFrameRtl8169(destMac, etherType, payload, payloadLen);
     return sendFrameRtl8139(destMac, etherType, payload, payloadLen);
 }
@@ -488,6 +642,41 @@ bool Network::sendFrameRtl8169(const uint8_t* destMac, uint16_t etherType, const
     return ok;
 }
 
+bool Network::sendFrameE1000(const uint8_t* destMac, uint16_t etherType, const uint8_t* payload, uint16_t payloadLen) {
+    if (!info.rtl8139Present || !info.rxEnabled || static_cast<uint32_t>(payloadLen) + 14u > 1536u) return false;
+
+    E1000TxDesc& desc = e1000TxDesc[txIndex];
+    for (int spin = 0; spin < 100000; spin++) {
+        if (desc.status & 0x01) break; // DD
+    }
+    if ((desc.status & 0x01) == 0) return false;
+
+    uint8_t* frame = e1000TxBuffers[txIndex];
+    memcpy(frame, destMac, 6);
+    memcpy(frame + 6, info.mac, 6);
+    wr16(frame + 12, etherType);
+    memcpy(frame + 14, payload, payloadLen);
+    uint16_t frameLen = static_cast<uint16_t>(payloadLen + 14);
+    if (frameLen < 60) { memset(frame + frameLen, 0, 60 - frameLen); frameLen = 60; }
+
+    desc.addr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(frame));
+    desc.length = frameLen;
+    desc.cso = 0;
+    desc.cmd = 0x0B; // EOP | IFCS | RS
+    desc.status = 0;
+    desc.css = 0;
+    desc.special = 0;
+    e1000Write32(0x3818, static_cast<uint32_t>((txIndex + 1) % E1000_TX_DESC_COUNT));
+
+    bool ok = false;
+    for (int spin = 0; spin < 300000; spin++) {
+        if (desc.status & 0x01) { ok = true; break; }
+    }
+    txIndex = static_cast<uint8_t>((txIndex + 1) % E1000_TX_DESC_COUNT);
+    info.txPackets++;
+    return ok;
+}
+
 void Network::sendArpRequest(uint32_t targetIp) {
     uint8_t p[28];
     wr16(p + 0, 1); wr16(p + 2, ETH_IPV4); p[4] = 6; p[5] = 4; wr16(p + 6, 1);
@@ -502,13 +691,38 @@ void Network::sendArpRequest(uint32_t targetIp) {
 }
 
 bool Network::lookupArp(uint32_t ip, uint8_t* outMac) const {
-    if (!arpValid || rd32(arpIp) != ip) return false;
-    memcpy(outMac, arpMac, 6);
-    return true;
+    if (!outMac) return false;
+    for (uint8_t i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (arpValid[i] && arpIp[i] == ip) {
+            memcpy(outMac, arpMac[i], 6);
+            return true;
+        }
+    }
+    return false;
 }
 
 void Network::rememberArp(uint32_t ip, const uint8_t* mac) {
-    wr32(arpIp, ip); memcpy(arpMac, mac, 6); arpValid = true;
+    if (!mac || ip == 0) return;
+    for (uint8_t i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (arpValid[i] && arpIp[i] == ip) {
+            memcpy(arpMac[i], mac, 6);
+            return;
+        }
+    }
+    uint8_t slot = arpNext;
+    arpIp[slot] = ip;
+    memcpy(arpMac[slot], mac, 6);
+    arpValid[slot] = true;
+    arpNext = static_cast<uint8_t>((arpNext + 1) % ARP_CACHE_SIZE);
+}
+
+void Network::clearArpCache() {
+    for (uint8_t i = 0; i < ARP_CACHE_SIZE; i++) {
+        arpIp[i] = 0;
+        for (int m = 0; m < 6; m++) arpMac[i][m] = 0;
+        arpValid[i] = false;
+    }
+    arpNext = 0;
 }
 
 uint32_t Network::routeNextHop(uint32_t targetIp) const {
@@ -545,6 +759,7 @@ bool Network::sendIcmpEchoWithTtl(uint32_t targetIp, const uint8_t* destMac, uin
 }
 
 void Network::poll() {
+    if (nicKind == NIC_E1000) { pollE1000(); return; }
     if (nicKind == NIC_RTL8169) { pollRtl8169(); return; }
     pollRtl8139();
 }
@@ -594,6 +809,26 @@ void Network::pollRtl8169() {
         desc.command = RTL_DESC_OWN | eor | RTL8169_RX_BUF_SIZE;
         rxOffset = static_cast<uint16_t>((rxOffset + 1) % RTL8169_RX_DESC_COUNT);
         rtl8169Write16(0x3E, 0x0001); // acknowledge RxOK if pending
+    }
+}
+
+void Network::pollE1000() {
+    if (!info.rtl8139Present || !info.rxEnabled) return;
+    for (int packets = 0; packets < E1000_RX_DESC_COUNT; packets++) {
+        E1000RxDesc& desc = e1000RxDesc[rxOffset];
+        if ((desc.status & 0x01) == 0) break; // DD
+
+        uint16_t size = desc.length;
+        if ((desc.status & 0x02) && size >= 14 && size <= E1000_RX_BUF_SIZE) { // EOP
+            info.rxPackets++;
+            handleFrame(e1000RxBuffers[rxOffset], size);
+        }
+
+        desc.status = 0;
+        desc.errors = 0;
+        desc.length = 0;
+        e1000Write32(0x2818, rxOffset);
+        rxOffset = static_cast<uint16_t>((rxOffset + 1) % E1000_RX_DESC_COUNT);
     }
 }
 
@@ -802,12 +1037,12 @@ void Network::handleDnsResponse(const uint8_t* data, uint16_t length) {
 
 bool Network::arping(uint32_t targetIp) {
     if (!info.rtl8139Present) return false;
-    arpValid = false;
     sendArpRequest(targetIp);
     uint32_t deadline = timerMillis() + 2000;
     while (timerMillis() < deadline) {
         poll();
-        if (arpValid && rd32(arpIp) == targetIp) return true;
+        uint8_t mac[6];
+        if (lookupArp(targetIp, mac)) return true;
     }
     return false;
 }
@@ -1064,7 +1299,7 @@ void Network::handleDhcpResponse(const uint8_t* data, uint16_t length) {
         info.netmask = mask ? mask : (dhcpNetmask ? dhcpNetmask : defaultNetmaskForIp(yiaddr));
         info.dhcpConfigured = true;
         dhcpAckSeen = true;
-        arpValid = false;
+        clearArpCache();
         Serial::writeString("[net] DHCPACK received\n");
     }
 }
@@ -1079,7 +1314,7 @@ bool Network::startDhcp() {
     dhcpDnsIp = 0;
     dhcpNetmask = 0;
     dhcpXid = 0x484B0000u + nextIcmpSeq++;
-    arpValid = false;
+    clearArpCache();
     info.dhcpConfigured = false;
     info.ipAddress = 0;
     info.gatewayIp = 0;
@@ -1120,6 +1355,21 @@ void Network::tickDhcp() {
 }
 
 uint8_t Network::getDhcpState() const { return dhcpState; }
+
+bool Network::configureStatic(uint32_t ip, uint32_t netmask, uint32_t gateway, uint32_t dns) {
+    if (!info.rtl8139Present || ip == 0 || netmask == 0) return false;
+    dhcpState = 0;
+    dhcpOfferSeen = false;
+    dhcpAckSeen = false;
+    info.ipAddress = ip;
+    info.netmask = netmask;
+    info.gatewayIp = gateway;
+    info.dnsIp = dns;
+    info.dhcpConfigured = false;
+    clearArpCache();
+    Serial::writeString("[net] static IPv4 configured\n");
+    return true;
+}
 
 bool Network::dhcpDiscover() {
     if (!startDhcp()) return false;

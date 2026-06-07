@@ -134,7 +134,7 @@ X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
 # prerequisites so any header edit forces a recompile. Prevents stale objects.
 $(OBJS) $(X64_OBJS): $(HEADERS)
 
-.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net smoke32-tor smoke32-tor-anon iso grubiso secureboot-files iso-checksum boot-report grub-menu-config grub-assets clean
+.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke32-net-e1000 smoke64-net smoke32-tor smoke32-tor-anon iso grubiso secureboot-files iso-checksum boot-report grub-menu-config grub-assets clean
 
 all: all32
 
@@ -256,6 +256,22 @@ smoke32-net: all32
 	@grep -q 'TCP SYN-ACK received' $(BUILD_DIR)/serial32-net.log
 	@grep -q 'hello-tcp-from-mrhakos' $(BUILD_DIR)/tcp32-received.log
 	@echo "=> Wrote $(BUILD_DIR)/smoke32-net.ppm and $(BUILD_DIR)/serial32-net.log"
+
+smoke32-net-e1000: all32
+	@echo "=> Network boot smoke test: 32-bit Intel E1000 + COM1"
+	@rm -f $(BUILD_DIR)/tcp32-e1000-received.log
+	@python3 scripts/tcp_smoke_server.py $(BUILD_DIR)/tcp32-e1000-received.log 8080 & server=$$!; \
+	(sleep $(BOOT_READY_WAIT); printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 1; printf 'dhcp\n' | $(QEMU_SENDKEYS); sleep 12; printf 'dns example.com\n' | $(QEMU_SENDKEYS); sleep 3; printf 'ping 10.0.2.2\n' | $(QEMU_SENDKEYS); sleep 2; printf 'tcp 10.0.2.2 8080 hello-e1000-from-mrhakos\n' | $(QEMU_SENDKEYS); sleep 4; printf 'netinfo\n' | $(QEMU_SENDKEYS); sleep 3; echo 'screendump $(BUILD_DIR)/smoke32-e1000-net.ppm'; echo quit) | $(QEMU32) -drive file=$(IMAGE_FILE),format=raw,if=floppy -netdev user,id=net0 -device e1000,netdev=net0 -serial file:$(BUILD_DIR)/serial32-e1000-net.log -monitor stdio -display none -no-reboot -no-shutdown >/dev/null; \
+	wait $$server
+	@test -s $(BUILD_DIR)/smoke32-e1000-net.ppm
+	@test -s $(BUILD_DIR)/serial32-e1000-net.log
+	@grep -q 'Intel E1000 detected' $(BUILD_DIR)/serial32-e1000-net.log
+	@grep -q 'DHCPACK received' $(BUILD_DIR)/serial32-e1000-net.log
+	@grep -q 'DNS A reply received' $(BUILD_DIR)/serial32-e1000-net.log
+	@grep -q 'ICMP echo reply received' $(BUILD_DIR)/serial32-e1000-net.log
+	@grep -q 'TCP SYN-ACK received' $(BUILD_DIR)/serial32-e1000-net.log
+	@grep -q 'hello-e1000-from-mrhakos' $(BUILD_DIR)/tcp32-e1000-received.log
+	@echo "=> Wrote $(BUILD_DIR)/smoke32-e1000-net.ppm and $(BUILD_DIR)/serial32-e1000-net.log"
 
 smoke32-tor: all32
 	@echo "=> Native Tor smoke test: 32-bit RTL8139 + COM1"

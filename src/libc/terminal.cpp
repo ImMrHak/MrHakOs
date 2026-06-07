@@ -1024,6 +1024,8 @@ void Terminal::processCommand(const char* cmd) {
         putString("  arping  - Resolve an IPv4 address with ARP, example: arping 10.0.2.2\n");
         putString("  ping    - Linux-like ICMP echo, example: ping example.com\n");
         putString("  dhcp    - Auto-configure IP/gateway/DNS with DHCP\n");
+        putString("  ifconfig - Show/set IPv4: ifconfig <ip> <netmask> [gateway] [dns]\n");
+        putString("  route   - Show IPv4 default route and DNS resolver\n");
         putString("  traceroute - Show ICMP route hops, example: traceroute example.com\n");
         putString("  udp     - Send UDP text to port 9001, example: udp 10.0.2.2 hello\n");
         putString("            Hostnames work too after DNS, example: udp myserver.com hello\n");
@@ -1084,6 +1086,10 @@ void Terminal::processCommand(const char* cmd) {
         cmdPing(args);
     } else if (strcmp(command, "dhcp") == 0) {
         cmdDhcp(args);
+    } else if (strcmp(command, "ifconfig") == 0 || strcmp(command, "ipconfig") == 0) {
+        cmdIfconfig(args);
+    } else if (strcmp(command, "route") == 0) {
+        cmdRoute(args);
     } else if (strcmp(command, "traceroute") == 0 || strcmp(command, "trace") == 0) {
         cmdTraceroute(args);
     } else if (strcmp(command, "udp") == 0) {
@@ -1641,6 +1647,80 @@ void Terminal::cmdDhcp(const char* args) {
     bool ok = network->startDhcp();
     if (!ok) { putString("DHCP could not start; NIC is unavailable or TX failed\n"); lastDhcpState = network->getDhcpState(); return; }
     lastDhcpState = network->getDhcpState();
+}
+
+void Terminal::cmdIfconfig(const char* args) {
+    putString("\n");
+    if (!network) { putString("Network subsystem unavailable\n"); return; }
+    const NetworkInfo& info = network->getInfo();
+    static char ipText[16];
+    static char maskText[16];
+    static char gwText[16];
+    static char dnsText[16];
+
+    int i = 0;
+    while (args[i] == ' ') i++;
+    if (args[i] == '\0') {
+        putString("Ethernet IPv4 configuration:\n");
+        putString("  NIC: "); putString(info.rtl8139Present ? info.nicName : "not ready"); putString("\n");
+        putString("  MAC: "); static char mac[18]; network->formatMac(mac, sizeof(mac)); putString(mac); putString("\n");
+        putString("  IP: "); network->formatIp(info.ipAddress, ipText, sizeof(ipText)); putString(info.ipAddress ? ipText : "not configured"); putString("\n");
+        putString("  Netmask: "); network->formatIp(info.netmask, maskText, sizeof(maskText)); putString(info.netmask ? maskText : "not configured"); putString("\n");
+        putString("  Gateway: "); network->formatIp(info.gatewayIp, gwText, sizeof(gwText)); putString(info.gatewayIp ? gwText : "not configured"); putString("\n");
+        putString("  DNS: "); network->formatIp(info.dnsIp, dnsText, sizeof(dnsText)); putString(info.dnsIp ? dnsText : "not configured"); putString("\n");
+        putString("Usage: ifconfig <ip> <netmask> [gateway] [dns]\n");
+        return;
+    }
+
+    static char parts[4][32];
+    for (int p = 0; p < 4; p++) parts[p][0] = '\0';
+    int part = 0;
+    while (args[i] && part < 4) {
+        while (args[i] == ' ') i++;
+        int j = 0;
+        while (args[i] && args[i] != ' ' && j < 31) parts[part][j++] = args[i++];
+        parts[part][j] = '\0';
+        if (j > 0) part++;
+    }
+    if (part < 2) { putString("Usage: ifconfig <ip> <netmask> [gateway] [dns]\n"); return; }
+
+    uint32_t ip = 0, mask = 0, gw = 0, dns = 0;
+    if (!network->parseIp(parts[0], &ip) || !network->parseIp(parts[1], &mask)) {
+        putString("Invalid IP/netmask\n"); return;
+    }
+    if (parts[2][0] && !network->parseIp(parts[2], &gw)) { putString("Invalid gateway\n"); return; }
+    if (parts[3][0] && !network->parseIp(parts[3], &dns)) { putString("Invalid DNS\n"); return; }
+    if (!network->configureStatic(ip, mask, gw, dns)) {
+        putString("Static IPv4 config failed; NIC unavailable or bad IP/netmask\n");
+        return;
+    }
+    putString("Static IPv4 configured\n");
+    putString("  IP: "); network->formatIp(ip, ipText, sizeof(ipText)); putString(ipText); putString("\n");
+    putString("  Netmask: "); network->formatIp(mask, maskText, sizeof(maskText)); putString(maskText); putString("\n");
+    putString("  Gateway: "); network->formatIp(gw, gwText, sizeof(gwText)); putString(gw ? gwText : "none"); putString("\n");
+    putString("  DNS: "); network->formatIp(dns, dnsText, sizeof(dnsText)); putString(dns ? dnsText : "none"); putString("\n");
+}
+
+void Terminal::cmdRoute(const char* args) {
+    (void)args;
+    putString("\n");
+    if (!network) { putString("Network subsystem unavailable\n"); return; }
+    const NetworkInfo& info = network->getInfo();
+    static char ip[16];
+    putString("IPv4 routes:\n");
+    if (info.ipAddress && info.netmask) {
+        network->formatIp(info.ipAddress & info.netmask, ip, sizeof(ip));
+        putString("  local subnet: "); putString(ip); putString("/");
+        network->formatIp(info.netmask, ip, sizeof(ip)); putString(ip); putString(" dev eth0\n");
+    } else {
+        putString("  local subnet: not configured\n");
+    }
+    putString("  default: ");
+    if (info.gatewayIp) { network->formatIp(info.gatewayIp, ip, sizeof(ip)); putString("via "); putString(ip); putString(" dev eth0\n"); }
+    else putString("not configured\n");
+    putString("  dns: ");
+    if (info.dnsIp) { network->formatIp(info.dnsIp, ip, sizeof(ip)); putString(ip); putString("\n"); }
+    else putString("not configured\n");
 }
 
 void Terminal::cmdTraceroute(const char* args) {

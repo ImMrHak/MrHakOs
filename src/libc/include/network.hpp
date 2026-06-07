@@ -80,6 +80,8 @@ public:
     bool startDhcp();
     void tickDhcp();
     uint8_t getDhcpState() const;
+    bool configureStatic(uint32_t ip, uint32_t netmask, uint32_t gateway, uint32_t dns);
+    void clearArpCache();
     bool sendUdpText(uint32_t targetIp, uint16_t destPort, const char* text);
     bool resolveDnsA(const char* hostname, uint32_t* outIp);
     bool sendTcpText(uint32_t targetIp, uint16_t destPort, const char* text);
@@ -115,9 +117,10 @@ private:
     uint32_t rxBufferPhys;
     uint16_t rxOffset;
     uint8_t txIndex;
-    uint8_t arpIp[4];
-    uint8_t arpMac[6];
-    bool arpValid;
+    uint32_t arpIp[8];
+    uint8_t arpMac[8][6];
+    bool arpValid[8];
+    uint8_t arpNext;
     uint16_t nextIcmpSeq;
     uint16_t lastEchoId;
     uint16_t lastEchoSeq;
@@ -157,9 +160,11 @@ private:
     void clearInfo();
     void initRtl8139(const PciDeviceInfo& device);
     void initRtl8169(const PciDeviceInfo& device);
+    void initE1000(const PciDeviceInfo& device);
     bool sendFrame(const uint8_t* destMac, uint16_t etherType, const uint8_t* payload, uint16_t payloadLen);
     bool sendFrameRtl8139(const uint8_t* destMac, uint16_t etherType, const uint8_t* payload, uint16_t payloadLen);
     bool sendFrameRtl8169(const uint8_t* destMac, uint16_t etherType, const uint8_t* payload, uint16_t payloadLen);
+    bool sendFrameE1000(const uint8_t* destMac, uint16_t etherType, const uint8_t* payload, uint16_t payloadLen);
     bool sendUdpPacket(uint32_t targetIp, uint16_t sourcePort, uint16_t destPort, const uint8_t* data, uint16_t dataLen);
     bool sendTcpPacket(uint32_t targetIp, uint16_t sourcePort, uint16_t destPort, uint32_t seq, uint32_t ack, uint8_t flags, const uint8_t* data, uint16_t dataLen);
     // Persistent TCP-session helpers used by the SOCKS5 client. Unlike
@@ -177,6 +182,7 @@ private:
     void handleFrame(const uint8_t* frame, uint16_t length);
     void pollRtl8139();
     void pollRtl8169();
+    void pollE1000();
     void handleArp(const uint8_t* payload, uint16_t length);
     void handleIpv4(const uint8_t* payload, uint16_t length);
     void handleUdp(const uint8_t* ipPacket, uint8_t ihl, uint16_t totalLen);

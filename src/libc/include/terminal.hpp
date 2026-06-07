@@ -90,6 +90,8 @@ class Terminal{
     void cmdArping(const char* args);
     void cmdPing(const char* args);
     void cmdDhcp(const char* args);
+    void cmdIfconfig(const char* args);
+    void cmdRoute(const char* args);
     void cmdTraceroute(const char* args);
     void cmdUdp(const char* args);
     void cmdDns(const char* args);
