@@ -153,9 +153,9 @@ Vga::Vga() {
 }
 
 // Switch to linear framebuffer mode; clears the screen using the new buffer.
-void Vga::init_fb(unsigned int addr, unsigned int pitch,
+void Vga::init_fb(unsigned long addr, unsigned int pitch,
                   unsigned int width, unsigned int height, unsigned char bpp) {
-    fb_base   = (volatile unsigned char*)(unsigned long)addr;
+    fb_base   = (volatile unsigned char*)addr;
     fb_pitch  = pitch;
     fb_width  = width;
     fb_height = height;

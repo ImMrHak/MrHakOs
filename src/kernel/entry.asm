@@ -18,19 +18,20 @@ multiboot2_header_start:
     dd multiboot2_header_end - multiboot2_header_start
     dd -(0xE85250D6 + 0 + (multiboot2_header_end - multiboot2_header_start))
 
-    ; Framebuffer request tag (type 5). REQUIRED so GRUB hands the kernel a
-    ; linear graphics framebuffer. On UEFI there is no VGA text mode, so without
-    ; this GRUB warns "no console will be available" and 0xB8000 writes are lost.
-    ; Ask for a high widescreen framebuffer. GRUB/firmware may return this or
+    ; Framebuffer request tag (type 5). GRUB can hand the kernel a linear
+    ; graphics framebuffer. On UEFI there is no VGA text mode, so this is the
+    ; preferred path for visible output instead of relying on 0xB8000 writes.
+    ; Ask for a conservative framebuffer first. GRUB/firmware may return this or
     ; the closest supported real screen mode; the kernel stretches the console
-    ; across whatever width/height it actually receives.
+    ; across whatever width/height it actually receives. The tag is optional so
+    ; BIOS/VGA systems that cannot provide it still boot instead of failing in GRUB.
     align 8
 fb_tag_start:
     dw 5                                  ; tag type: framebuffer
-    dw 0                                  ; flags (0 = required)
+    dw 1                                  ; flags (1 = optional fallback if a firmware cannot provide it)
     dd fb_tag_end - fb_tag_start          ; tag size (20)
-    dd 1920                               ; preferred width
-    dd 1080                               ; preferred height
+    dd 1024                               ; safe preferred width
+    dd 768                                ; safe preferred height
     dd 32                                 ; preferred bits-per-pixel
 fb_tag_end:
 

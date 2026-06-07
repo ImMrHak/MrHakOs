@@ -88,53 +88,19 @@ void initKernelMemoryProtection() {
     gMemoryStatus.bssEnd = reinterpret_cast<uintptr_t>(&__bss_end);
 
 #ifdef __x86_64__
-    const uint64_t PTE_PRESENT = 1ull << 0;
-    const uint64_t PTE_RW = 1ull << 1;
-    const uint64_t PTE_NX = 1ull << 63;
-
-    bool nx = cpuSupportsNx();
-    gMemoryStatus.nxSupported = nx;
-    if (nx) {
-        uint64_t efer = readMsr(0xC0000080u);
-        efer |= (1ull << 11); // IA32_EFER.NXE
-        writeMsr(0xC0000080u, efer);
-        gMemoryStatus.nxEnabled = true;
-    }
-
-    for (int i = 0; i < 512; ++i) {
-        pml4[i] = 0;
-        pdpt[i] = 0;
-        pd[i] = 0;
-        pt0[i] = 0;
-    }
-
-    pml4[0] = reinterpret_cast<uintptr_t>(pdpt) | PTE_PRESENT | PTE_RW;
-    pdpt[0] = reinterpret_cast<uintptr_t>(pd) | PTE_PRESENT | PTE_RW;
-    pd[0] = reinterpret_cast<uintptr_t>(pt0) | PTE_PRESENT | PTE_RW;
-
-    for (int i = 0; i < 512; ++i) {
-        uintptr_t addr = static_cast<uintptr_t>(i) * 4096u;
-        bool executable = addressInRange(addr, gMemoryStatus.textStart, gMemoryStatus.textEnd);
-        bool readOnly = executable || addressInRange(addr, gMemoryStatus.rodataStart, gMemoryStatus.rodataEnd);
-        uint64_t flags = PTE_PRESENT;
-        if (!readOnly) {
-            flags |= PTE_RW;
-        }
-        if (nx && !executable) {
-            flags |= PTE_NX;
-        }
-        pt0[i] = static_cast<uint64_t>(addr) | flags;
-    }
-
-    uint64_t cr0 = readCr0();
-    cr0 |= (1ull << 16); // CR0.WP: supervisor writes obey read-only PTEs.
-    writeCr0(cr0);
-    gMemoryStatus.writeProtectEnabled = true;
-
-    writeCr3(reinterpret_cast<uintptr_t>(pml4));
+    // Long mode is entered by the GRUB Multiboot2 bootstrap, which installs a
+    // broad identity map (currently first 16 GiB) before jumping here. Keep that
+    // map active for now so UEFI GOP framebuffers on modern GPUs remain
+    // addressable. The previous x86_64 code replaced CR3 with a tiny 2 MiB map,
+    // which could immediately page-fault when the framebuffer lived above low
+    // memory. A later hardening pass can rebuild page permissions after parsing
+    // the Multiboot memory map and framebuffer address.
     gMemoryStatus.pagingActive = true;
-    gMemoryStatus.kernelWxProtected = true;
-    Serial::writeString("[memory] x86_64 4K page permissions installed (W^X/NX where supported)\n");
+    gMemoryStatus.nxSupported = false;
+    gMemoryStatus.nxEnabled = false;
+    gMemoryStatus.writeProtectEnabled = false;
+    gMemoryStatus.kernelWxProtected = false;
+    Serial::writeString("[memory] x86_64 long-mode identity map kept for UEFI framebuffer compatibility\n");
 #else
     gMemoryStatus.pagingActive = false;
     gMemoryStatus.nxSupported = false;

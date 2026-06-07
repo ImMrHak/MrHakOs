@@ -306,6 +306,18 @@ uint32_t keyboardIrqScancodes() { return g_keyboard_irq_scancodes; }
 uint32_t timerTicks() { return g_timer_ticks; }
 uint32_t timerMillis() { return g_timer_ticks; }
 void pitSleepMs(uint32_t ms) {
+    // Do not use HLT here. Some real UEFI/modern desktop boots do not deliver
+    // legacy PIT/PIC IRQ0 reliably after GRUB, so HLT can freeze forever right
+    // after the screen is cleared. Busy-wait with a guard instead: if IRQ0 is
+    // working the timer controls the delay; if not, the guard still lets boot
+    // continue to the terminal instead of leaving a black screen.
     uint32_t start = timerMillis();
-    while (timerMillis() - start < ms) { asm volatile("hlt"); }
+    uint32_t guard = 0;
+    uint32_t max_guard = ms * 20u + 200u;
+    while (timerMillis() - start < ms && guard < max_guard) {
+        for (volatile uint32_t spin = 0; spin < 50000u; ++spin) {
+            asm volatile("pause");
+        }
+        ++guard;
+    }
 }

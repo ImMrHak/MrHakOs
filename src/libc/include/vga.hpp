@@ -34,7 +34,7 @@ class Vga{
     Vga();
 
     // Switch to linear framebuffer mode (called after Multiboot2 detection)
-    void init_fb(unsigned int addr, unsigned int pitch,
+    void init_fb(unsigned long addr, unsigned int pitch,
                  unsigned int width, unsigned int height, unsigned char bpp);
 
     // VGA methods

@@ -30,6 +30,7 @@ BOOT_SRC     := $(SRC_DIR)/boot/bootloader.asm
 BOOT64_SRC   := $(SRC_DIR)/boot/bootloader64.asm
 KERNEL_ASM   := $(SRC_DIR)/kernel/entry.asm
 KERNEL64_ASM := $(SRC_DIR)/kernel/entry64.asm
+LONGBOOT_ASM := $(SRC_DIR)/kernel/longmode_boot.asm
 KERNEL_CPP   := $(SRC_DIR)/kernel/kernel.cpp
 
 LIBC_CPP_VGA  := $(SRC_DIR)/libc/vga.cpp
@@ -59,8 +60,13 @@ KERNEL64_BIN  := $(BUILD_DIR)/kernel64.bin
 IMAGE_FILE_64 := $(BUILD_DIR)/mrhakos64.img
 GRUB_ISO      := $(BUILD_DIR)/mrhakos-grub.iso
 GRUB_ISO_SHA  := $(GRUB_ISO).sha256
+GRUB_SECUREBOOT_EFI := $(BUILD_DIR)/secureboot/efi-signed.img
+LONGBOOT_ELF  := $(BUILD_DIR)/mrhakos-longmode.elf
+LONGBOOT_OBJ  := $(BUILD_DIR)/longmode_boot.o
+LONGBOOT_LD   := $(SRC_DIR)/kernel/longmode_boot.ld
 GRUB_ISODIR   := $(BUILD_DIR)/grub-isodir
 GRUB_MENU_CFG := $(BUILD_DIR)/41_mrhakos
+SECUREBOOT_SIGN_SCRIPT := scripts/sign_secureboot_iso.sh
 OVMF_PATHS    := /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd
 OVMF_FD      := $(firstword $(wildcard $(OVMF_PATHS)))
 
@@ -128,7 +134,7 @@ X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
 # prerequisites so any header edit forces a recompile. Prevents stale objects.
 $(OBJS) $(X64_OBJS): $(HEADERS)
 
-.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net smoke32-tor smoke32-tor-anon iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
+.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net smoke32-tor smoke32-tor-anon iso grubiso secureboot-files iso-checksum boot-report grub-menu-config grub-assets clean
 
 all: all32
 
@@ -153,17 +159,32 @@ check-tools:
 	done
 
 check-grub-tools:
-	@for tool in grub-file grub-mkrescue xorriso; do \
+	@for tool in grub-file grub-mkrescue xorriso mformat mdir mcopy grub-mkstandalone; do \
 		if ! command -v $$tool >/dev/null 2>&1; then \
 			echo "Missing GRUB ISO tool: $$tool"; \
 			echo ""; \
 			echo "On Kali/Debian, install GRUB ISO tools with:"; \
 			echo "  sudo apt-get update"; \
-			echo "  sudo apt-get install -y grub-pc-bin xorriso"; \
+			echo "  sudo apt-get install -y grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin xorriso mtools"; \
 			exit 1; \
 		fi; \
 		printf '   %-24s %s\n' $$tool "$$(command -v $$tool)"; \
 	done
+	@if [ ! -d /usr/lib/grub/i386-pc ]; then \
+		echo "Missing GRUB BIOS modules: /usr/lib/grub/i386-pc"; \
+		echo "Install with: sudo apt-get install -y grub-pc-bin"; \
+		exit 1; \
+	fi
+	@if [ ! -d /usr/lib/grub/x86_64-efi ]; then \
+		echo "Missing GRUB UEFI x86_64 modules: /usr/lib/grub/x86_64-efi"; \
+		echo "Install with: sudo apt-get install -y grub-efi-amd64-bin mtools"; \
+		exit 1; \
+	fi
+	@if [ ! -d /usr/lib/grub/i386-efi ]; then \
+		echo "Missing GRUB UEFI IA32 modules: /usr/lib/grub/i386-efi"; \
+		echo "Install with: sudo apt-get install -y grub-efi-ia32-bin"; \
+		exit 1; \
+	fi
 
 doctor: check-tools
 	@echo "=> Disk image limits"
@@ -174,7 +195,8 @@ install-deps-help:
 	@echo "Kali/Debian dependencies:"
 	@echo "  sudo apt-get update"
 	@echo '  sudo apt-get install -y nasm qemu-system-x86 clang lld llvm \'
-	@echo '      gcc-i686-linux-gnu g++-i686-linux-gnu binutils-i686-linux-gnu'
+	@echo '      gcc-i686-linux-gnu g++-i686-linux-gnu binutils-i686-linux-gnu \'
+	@echo '      grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin xorriso mtools sbsigntool ovmf'
 
 run: run32
 
@@ -284,24 +306,63 @@ iso: boot-report iso-checksum
 	@echo "=> Real-hardware ISO ready: $(GRUB_ISO)"
 	@echo "=> SHA256: $$(cut -d' ' -f1 $(GRUB_ISO_SHA))"
 
-grubiso: $(KERNEL_ELF) check-grub-tools
-	@echo "=> Checking Multiboot2 header in $(KERNEL_ELF)"
+grubiso: $(KERNEL_ELF) $(KERNEL64_BIN) $(LONGBOOT_ELF) check-grub-tools
+	@echo "=> Checking Multiboot2 headers in $(KERNEL_ELF) and $(LONGBOOT_ELF)"
 	@grub-file --is-x86-multiboot2 $(KERNEL_ELF)
+	@grub-file --is-x86-multiboot2 $(LONGBOOT_ELF)
 	@rm -rf $(GRUB_ISODIR)
 	@mkdir -p $(GRUB_ISODIR)/boot/grub
 	@cp $(KERNEL_ELF) $(GRUB_ISODIR)/boot/mrhakos-kernel.elf
+	@cp $(LONGBOOT_ELF) $(GRUB_ISODIR)/boot/mrhakos-longmode.elf
+	@cp $(KERNEL64_BIN) $(GRUB_ISODIR)/boot/mrhakos-kernel64.bin
 	@printf '%s\n' \
 		'insmod all_video' \
 		'insmod efi_gop' \
 		'insmod video_bochs' \
 		'insmod video_cirrus' \
-		'set gfxmode=1920x1080x32,1600x900x32,1366x768x32,1280x720x32,1280x1024x32,1024x768x32,auto' \
-		'set timeout=5' \
+		'insmod gfxterm' \
+		'insmod multiboot2' \
+		'terminal_output gfxterm' \
 		'set default=0' \
+		'set timeout=8' \
 		'' \
-		'menuentry "MrHakOS 32-bit (Multiboot2)" {' \
-		'    set gfxpayload=keep' \
+		'menuentry "MrHakOS 64-bit LONG MODE (Secure Boot / modern UEFI default)" {' \
+		'    set gfxpayload=800x600x32' \
+		'    multiboot2 /boot/mrhakos-longmode.elf' \
+		'    module2 /boot/mrhakos-kernel64.bin kernel64' \
+		'    boot' \
+		'}' \
+		'' \
+		'menuentry "MrHakOS 64-bit LONG MODE (NVIDIA fallback 1024x768)" {' \
+		'    set gfxpayload=1024x768x32' \
+		'    multiboot2 /boot/mrhakos-longmode.elf' \
+		'    module2 /boot/mrhakos-kernel64.bin kernel64' \
+		'    boot' \
+		'}' \
+		'' \
+		'menuentry "MrHakOS 64-bit LONG MODE (lowest graphics 640x480)" {' \
+		'    set gfxpayload=640x480x32' \
+		'    multiboot2 /boot/mrhakos-longmode.elf' \
+		'    module2 /boot/mrhakos-kernel64.bin kernel64' \
+		'    boot' \
+		'}' \
+		'' \
+		'menuentry "MrHakOS 64-bit LONG MODE (safe: no boot animation, 800x600)" {' \
+		'    set gfxpayload=800x600x32' \
+		'    multiboot2 /boot/mrhakos-longmode.elf mrhakos.noanim' \
+		'    module2 /boot/mrhakos-kernel64.bin kernel64' \
+		'    boot' \
+		'}' \
+		'' \
+		'menuentry "MrHakOS 32-bit fallback (forced 800x600)" {' \
+		'    set gfxpayload=800x600x32' \
 		'    multiboot2 /boot/mrhakos-kernel.elf' \
+		'    boot' \
+		'}' \
+		'' \
+		'menuentry "MrHakOS 32-bit plain VGA text fallback (BIOS/CSM only, no animation)" {' \
+		'    set gfxpayload=text' \
+		'    multiboot2 /boot/mrhakos-kernel.elf mrhakos.noanim mrhakos.nofb' \
 		'    boot' \
 		'}' > $(GRUB_ISODIR)/boot/grub/grub.cfg
 	@grub-mkrescue -o $(GRUB_ISO) $(GRUB_ISODIR) >/dev/null
@@ -314,9 +375,29 @@ boot-report: grubiso
 	@echo "=> Verifying ISO hybrid boot metadata (BIOS MBR + GPT/EFI when GRUB tools provide it)"
 	@file $(GRUB_ISO)
 	@xorriso -indev $(GRUB_ISO) -report_system_area plain 2>/dev/null | tee $(BUILD_DIR)/boot-report.txt
+	@xorriso -indev $(GRUB_ISO) -report_el_torito plain 2>/dev/null | tee $(BUILD_DIR)/eltorito-report.txt
+	@rm -f $(BUILD_DIR)/efi.img
+	@xorriso -osirrox on -indev $(GRUB_ISO) -extract /efi.img $(BUILD_DIR)/efi.img >/dev/null 2>&1
+	@mdir -i $(BUILD_DIR)/efi.img ::/EFI/BOOT | tee $(BUILD_DIR)/efi-boot-files.txt
 	@grep -q 'MBR' $(BUILD_DIR)/boot-report.txt
 	@grep -q 'GPT' $(BUILD_DIR)/boot-report.txt
-	@echo "=> Boot report wrote $(BUILD_DIR)/boot-report.txt"
+	@grep -q 'BIOS' $(BUILD_DIR)/eltorito-report.txt
+	@grep -q 'UEFI' $(BUILD_DIR)/eltorito-report.txt
+	@grep -qi 'bootx64' $(BUILD_DIR)/efi-boot-files.txt
+	@grep -qi 'bootia32' $(BUILD_DIR)/efi-boot-files.txt
+	@echo "=> Boot report wrote $(BUILD_DIR)/boot-report.txt, $(BUILD_DIR)/eltorito-report.txt, and $(BUILD_DIR)/efi-boot-files.txt"
+
+secureboot-files: iso
+	@for tool in openssl sbsign; do \
+		if ! command -v $$tool >/dev/null 2>&1; then \
+			echo "Missing Secure Boot signing tool: $$tool"; \
+			echo "Install with: sudo apt-get install -y sbsigntool openssl"; \
+			exit 1; \
+		fi; \
+	done
+	@$(SECUREBOOT_SIGN_SCRIPT) $(GRUB_ISO) $(GRUB_SECUREBOOT_EFI)
+	@echo "=> Self-signed Secure Boot EFI files ready under: $(BUILD_DIR)/secureboot"
+	@echo "=> Enroll cert first: $(BUILD_DIR)/secureboot/MrHakOS-SecureBoot.der"
 
 # Generate a standalone Kali /etc/grub.d script. Install manually with sudo
 # after copying bin/kernel.elf to /boot/mrhakos/kernel.elf.
@@ -397,6 +478,10 @@ $(KERNEL64_ELF): $(X64_OBJS)
 	@echo "=> Linking 64-bit kernel ELF: $@"
 	@$(X64_LD) $(X64_LDFLAGS) -o $@ $^
 
+$(LONGBOOT_ELF): $(LONGBOOT_OBJ) $(LONGBOOT_LD)
+	@echo "=> Linking Multiboot2 long-mode bootstrap: $@"
+	@$(LD) -m elf_i386 -T $(LONGBOOT_LD) -o $@ $(LONGBOOT_OBJ)
+
 $(KERNEL64_BIN): $(KERNEL64_ELF)
 	@echo "=> Converting 64-bit to flat binary: $@"
 	@$(X64_OBJCOPY) -O binary $< $@
@@ -410,6 +495,14 @@ $(BUILD_DIR)/entry64.o: $(KERNEL64_ASM)
 	@mkdir -p $(BUILD_DIR)
 	@echo "=> Assembling 64-bit kernel entry: $<"
 	@$(AS) -f elf64 $< -o $@
+
+# The bootstrap embeds the 64-bit kernel via `incbin "bin/kernel64.bin"`, so it
+# must be (re)assembled whenever that flat binary changes and only after it is
+# built. The incbin path is relative to the make working directory (repo root).
+$(LONGBOOT_OBJ): $(LONGBOOT_ASM) $(KERNEL64_BIN)
+	@mkdir -p $(BUILD_DIR)
+	@echo "=> Assembling Multiboot2 long-mode bootstrap (embeds $(KERNEL64_BIN)): $<"
+	@$(AS) -f elf32 $< -o $@
 
 $(BUILD_DIR)/kernel.o: $(KERNEL_CPP)
 	@mkdir -p $(BUILD_DIR)

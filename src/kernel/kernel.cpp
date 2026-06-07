@@ -136,6 +136,30 @@ static void showBootAnimation(Vga& vga) {
     vga.set_cursor_enabled(true);
 }
 
+// Scan the Multiboot2 info structure for a command-line option.
+static bool mb2_cmdline_has(uint32_t mb_info_addr, const char* needle) {
+    if (mb_info_addr == 0 || !needle || needle[0] == '\0') return false;
+    uint32_t total = *(volatile uint32_t*)mb_info_addr;
+    uint8_t* ptr   = (uint8_t*)(mb_info_addr + 8);
+    uint8_t* end   = (uint8_t*)mb_info_addr + total;
+    while (ptr < end) {
+        uint32_t tag_type = *(uint32_t*)ptr;
+        uint32_t tag_size = *(uint32_t*)(ptr + 4);
+        if (tag_type == 0 || tag_size < 8) break;
+        if (tag_type == 1) {
+            const char* cmdline = (const char*)(ptr + 8);
+            for (uint32_t i = 0; i + 8 < tag_size && cmdline[i]; i++) {
+                uint32_t j = 0;
+                while (needle[j] && i + j + 8 < tag_size && cmdline[i + j] == needle[j]) j++;
+                if (needle[j] == '\0') return true;
+            }
+            return false;
+        }
+        ptr += (tag_size + 7) & ~7u;
+    }
+    return false;
+}
+
 // Scan the Multiboot2 info structure for a framebuffer tag and wire it up.
 static void mb2_init_fb(Vga& vga, uint32_t mb_info_addr) {
     Serial::writeString("[kernel] scanning MB2 tags for framebuffer\n");
@@ -153,10 +177,17 @@ static void mb2_init_fb(Vga& vga, uint32_t mb_info_addr) {
             uint32_t fb_h     = *(uint32_t*)(ptr + 24);
             uint8_t  fb_bpp   = *(uint8_t* )(ptr + 28);
             uint8_t  fb_type  = *(uint8_t* )(ptr + 29);
+#ifdef __x86_64__
+            if (fb_type == 1 && fb_bpp >= 24) {
+                Serial::writeString("[kernel] linear framebuffer found -> FB mode\n");
+                vga.init_fb((unsigned long)fb_addr, fb_pitch, fb_w, fb_h, fb_bpp);
+            } else if (fb_type == 2) {
+#else
             if (fb_type == 1 && fb_bpp >= 24 && (fb_addr >> 32) == 0) {
                 Serial::writeString("[kernel] linear framebuffer found -> FB mode\n");
-                vga.init_fb((uint32_t)fb_addr, fb_pitch, fb_w, fb_h, fb_bpp);
+                vga.init_fb((unsigned long)fb_addr, fb_pitch, fb_w, fb_h, fb_bpp);
             } else if (fb_type == 2) {
+#endif
                 Serial::writeString("[kernel] EGA text framebuffer (VGA text mode kept)\n");
             } else {
                 Serial::writeString("[kernel] framebuffer tag unsuitable -> VGA text mode kept\n");
@@ -174,9 +205,14 @@ extern "C" void kernel_main(unsigned int mb_magic, unsigned int mb_info_addr) {
     Serial::writeString("[kernel] memory protection initialized\n");
 
     Vga vga;
+    bool have_mb2 = (mb_magic == 0x36D76289 && mb_info_addr != 0);
+    bool no_fb = have_mb2 && mb2_cmdline_has(mb_info_addr, "mrhakos.nofb");
+    bool no_anim = have_mb2 && mb2_cmdline_has(mb_info_addr, "mrhakos.noanim");
     // If booted via GRUB Multiboot2 with a linear framebuffer, switch VGA to it.
-    if (mb_magic == 0x36D76289 && mb_info_addr != 0)
+    if (have_mb2 && !no_fb)
         mb2_init_fb(vga, mb_info_addr);
+    if (no_fb)
+        Serial::writeString("[kernel] framebuffer disabled by command line\n");
     Serial::writeString("[kernel] vga object ready\n");
 
     Interrupts interrupts;
@@ -195,7 +231,11 @@ extern "C" void kernel_main(unsigned int mb_magic, unsigned int mb_info_addr) {
     kernelNetwork.init();
     Serial::writeString("[kernel] network initialized\n");
 
-    showBootAnimation(vga);
+    if (!no_anim) {
+        showBootAnimation(vga);
+    } else {
+        Serial::writeString("[kernel] boot animation skipped by command line\n");
+    }
 
     terminal.init(&vga, &interrupts, &filesystem, &kernelNetwork);
     
