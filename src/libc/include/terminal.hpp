@@ -70,9 +70,18 @@ class Terminal{
     void cmdCd(const char* args);
     void cmdCp(const char* args);
     void cmdMv(const char* args);
+    void cmdRm(const char* args);
     void cmdTouch(const char* args);
     void cmdCat(const char* args);
     void cmdEcho(const char* args);
+    void cmdHead(const char* args);
+    void cmdTail(const char* args);
+    void cmdLess(const char* args);
+    void cmdFind(const char* args);
+    void cmdGrep(const char* args);
+    void cmdChmod(const char* args);
+    void cmdChown(const char* args);
+    void cmdNano(const char* args);
     void cmdNetinfo(const char* args);
     void cmdMeminfo(const char* args);
     void cmdNetpoll(const char* args);
@@ -88,6 +97,12 @@ class Terminal{
     void cmdSocks5(const char* args);
     void cmdTor(const char* args);
     void cmdSecureChat(const char* args);
+    char waitForInputKey();
+    bool readEditorLine(char* buffer, int bufferSize);
+    void printContentLine(const char* start, const char* end);
+    void findWalk(FileSystemEntry* entry, const char* path, const char* nameFilter, int typeFilter);
+    void grepFile(const char* path, const char* pattern, bool showLineNumbers, bool showPath);
+    void grepWalk(FileSystemEntry* entry, const char* path, const char* pattern, bool showLineNumbers);
     
     public:
     // Constructor

@@ -119,7 +119,7 @@ X64_LDFLAGS := -T $(SRC_DIR)/kernel/linker64.ld -nostdlib
 # prerequisites so any header edit forces a recompile. Prevents stale objects.
 $(OBJS) $(X64_OBJS): $(HEADERS)
 
-.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
+.PHONY: all all32 all64 run run32 run32-net run64 run64-net run-grub run-uefi check-tools check-grub-tools doctor install-deps-help dev-examples check-sizes32 check-sizes64 smoke smoke32 smoke64 smoke32-net smoke64-net iso grubiso iso-checksum boot-report grub-menu-config grub-assets clean
 
 all: all32
 
@@ -166,6 +166,9 @@ install-deps-help:
 	@echo "  sudo apt-get update"
 	@echo '  sudo apt-get install -y nasm qemu-system-x86 clang lld llvm \'
 	@echo '      gcc-i686-linux-gnu g++-i686-linux-gnu binutils-i686-linux-gnu'
+
+dev-examples:
+	@$(MAKE) -C examples/development BUILD_DIR=../../$(BUILD_DIR)/dev-examples
 
 run: run32
 

@@ -68,6 +68,103 @@ static bool textContains(const char* haystack, const char* needle) {
     return false;
 }
 
+static const char* skipSpaces(const char* p) {
+    while (p && (*p == ' ' || *p == '\t')) {
+        p++;
+    }
+    return p;
+}
+
+static bool parseToken(const char*& p, char* out, int outLen) {
+    if (!out || outLen <= 0) {
+        return false;
+    }
+    out[0] = '\0';
+    p = skipSpaces(p);
+    if (!p || *p == '\0') {
+        return false;
+    }
+
+    int o = 0;
+    if (*p == '"') {
+        p++;
+        while (*p != '\0' && *p != '"' && o < outLen - 1) {
+            out[o++] = *p++;
+        }
+        if (*p == '"') {
+            p++;
+        }
+    } else {
+        while (*p != '\0' && *p != ' ' && *p != '\t' && o < outLen - 1) {
+            out[o++] = *p++;
+        }
+    }
+    out[o] = '\0';
+    p = skipSpaces(p);
+    return out[0] != '\0';
+}
+
+static bool parsePositiveInt(const char* text, int* out) {
+    if (!text || !out || text[0] == '\0') {
+        return false;
+    }
+    int value = 0;
+    for (int i = 0; text[i] != '\0'; i++) {
+        if (text[i] < '0' || text[i] > '9') {
+            return false;
+        }
+        value = value * 10 + (text[i] - '0');
+        if (value > 999) {
+            value = 999;
+        }
+    }
+    *out = value;
+    return value > 0;
+}
+
+static bool isFileEntry(FileSystemEntry* entry) {
+    return entry && (entry->type == FS_TYPE_FILE || entry->type == FS_TYPE_HAK_FILE);
+}
+
+static bool lineContains(const char* start, const char* end, const char* needle) {
+    if (!start || !end || !needle || needle[0] == '\0') {
+        return false;
+    }
+    for (const char* p = start; p < end; p++) {
+        int i = 0;
+        while (needle[i] && p + i < end && p[i] == needle[i]) {
+            i++;
+        }
+        if (needle[i] == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void appendPath(char* out, int outLen, const char* base, const char* name) {
+    if (!out || outLen <= 0) {
+        return;
+    }
+    int o = 0;
+    if (base && base[0]) {
+        for (int i = 0; base[i] && o < outLen - 1; i++) {
+            out[o++] = base[i];
+        }
+    }
+    bool needsSlash = o > 0 && out[o - 1] != '/';
+    bool dotBase = (o == 1 && out[0] == '.');
+    if ((needsSlash || dotBase) && o < outLen - 1) {
+        out[o++] = '/';
+    }
+    if (name) {
+        for (int i = 0; name[i] && o < outLen - 1; i++) {
+            out[o++] = name[i];
+        }
+    }
+    out[o] = '\0';
+}
+
 struct TorConsensusSummary {
     uint32_t relays;
     uint32_t guards;
@@ -854,11 +951,20 @@ void Terminal::processCommand(const char* cmd) {
         putString("  mkdir   - Create a new directory\n");
         putString("  ls      - List files and directories\n");
         putString("  cd      - Change current directory\n");
-        putString("  touch   - Create a new .hak file\n");
-        putString("  cat     - Display the content of a .hak file\n");
-        putString("  echo    - Display text or write to a .hak file using > redirection\n");
+        putString("  touch   - Create a new text file\n");
+        putString("  cat     - Display file content\n");
+        putString("  echo    - Display text or write to a file using > redirection\n");
         putString("  cp      - Copy a file\n");
         putString("  mv      - Move a file or directory\n");
+        putString("  rm      - Remove a file or directory, examples: rm file.txt | rm -r dir\n");
+        putString("  head    - Show first lines, example: head -n 20 file.txt\n");
+        putString("  tail    - Show last lines, example: tail -n 20 file.txt\n");
+        putString("  less    - Page through a file, SPACE/ENTER next page, q quit\n");
+        putString("  find    - Find files, examples: find . -name file.txt | find . -type f\n");
+        putString("  grep    - Search text, examples: grep hello file.txt | grep -rn hello .\n");
+        putString("  nano    - Minimal line editor: .save, .wq, .quit\n");
+        putString("  chmod   - Not available yet: filesystem permissions are not implemented\n");
+        putString("  chown   - Not available yet: users/ownership are not implemented\n");
         putString("  netinfo - Show detected Ethernet/PCI network state\n");
         putString("  netpoll - Poll RTL8139 receive queue once\n");
         putString("  arping  - Resolve an IPv4 address with ARP, example: arping 10.0.2.2\n");
@@ -908,12 +1014,30 @@ void Terminal::processCommand(const char* cmd) {
         cmdCp(args);
     } else if (strcmp(command, "mv") == 0) {
         cmdMv(args);
+    } else if (strcmp(command, "rm") == 0) {
+        cmdRm(args);
     } else if (strcmp(command, "touch") == 0) {
         cmdTouch(args);
     } else if (strcmp(command, "cat") == 0) {
         cmdCat(args);
     } else if (strcmp(command, "echo") == 0) {
         cmdEcho(args);
+    } else if (strcmp(command, "head") == 0) {
+        cmdHead(args);
+    } else if (strcmp(command, "tail") == 0) {
+        cmdTail(args);
+    } else if (strcmp(command, "less") == 0) {
+        cmdLess(args);
+    } else if (strcmp(command, "find") == 0) {
+        cmdFind(args);
+    } else if (strcmp(command, "grep") == 0) {
+        cmdGrep(args);
+    } else if (strcmp(command, "chmod") == 0) {
+        cmdChmod(args);
+    } else if (strcmp(command, "chown") == 0) {
+        cmdChown(args);
+    } else if (strcmp(command, "nano") == 0 || strcmp(command, "edit") == 0) {
+        cmdNano(args);
     } else if (strcmp(command, "netinfo") == 0) {
         cmdNetinfo(args);
     } else if (strcmp(command, "netpoll") == 0) {
@@ -1108,7 +1232,7 @@ void Terminal::cmdCp(const char* args) {
         putString(destination);
         putString("\n");
     } else {
-        putString("\nError: Could not copy file. Make sure source exists and destination doesn't, and both are .hak files.\n");
+        putString("\ncp: could not copy file; check source, destination, and directory space\n");
     }
 }
 
@@ -1153,33 +1277,22 @@ void Terminal::cmdMv(const char* args) {
         putString(destination);
         putString("\n");
     } else {
-        putString("\nError: Could not move/rename. Make sure source exists, destination doesn't, and .hak files keep their extension.\n");
+        putString("\nmv: could not move/rename; check source, destination, and directory space\n");
     }
 }
 
 void Terminal::cmdTouch(const char* args) {
     if (args[0] == '\0') {
-        putString("\nError: touch requires a filename\n");
+        putString("\ntouch: missing file operand\n");
         return;
     }
-    
-    // Check if the filename has .hak extension
-    const char* extension = ".hak";
-    size_t argsLen = strlen(args);
-    size_t extLen = strlen(extension);
-    
-    if (argsLen <= extLen || strcmp(args + argsLen - extLen, extension) != 0) {
-        putString("\nError: Only .hak files are supported\n");
-        return;
-    }
-    
-    // Create an empty .hak file
-    if (filesystem->createHakFile(args, "")) {
+
+    if (filesystem->createFile(args, "")) {
         putString("\nFile created: ");
         putString(args);
         putString("\n");
     } else {
-        putString("\nError: Could not create file\n");
+        putString("\ntouch: could not create file\n");
     }
 }
 
@@ -1189,11 +1302,11 @@ void Terminal::cmdCat(const char* args) {
         return;
     }
     
-    // Buffer to store file content
-    char buffer[FS_MAX_FILE_SIZE];
+    // Keep the file buffer out of the small 64-bit kernel stack.
+    static char buffer[FS_MAX_FILE_SIZE];
     
     // Read file content
-    if (filesystem->readHakFile(args, buffer, FS_MAX_FILE_SIZE)) {
+    if (filesystem->readFile(args, buffer, FS_MAX_FILE_SIZE)) {
         putString("\nContent of ");
         putString(args);
         putString(":\n");
@@ -1206,7 +1319,7 @@ void Terminal::cmdCat(const char* args) {
             putString("\n");
         }
     } else {
-        putString("\nError: Could not read file\n");
+        putString("\ncat: cannot open file\n");
     }
 }
 
@@ -1267,25 +1380,555 @@ void Terminal::cmdEcho(const char* args) {
             return;
         }
         
-        // Check if the filename has .hak extension
-        if (!filesystem->hasExtension(filename, ".hak")) {
-            putString("\nError: Only .hak files are supported\n");
-            return;
-        }
-        
         // Write to file
-        if (filesystem->createHakFile(filename, text)) {
+        if (filesystem->writeFile(filename, text)) {
             putString("\nContent written to ");
             putString(filename);
             putString("\n");
         } else {
-            putString("\nError: Could not write to file\n");
+            putString("\necho: could not write to file\n");
         }
     } else {
         // Just echo the text
         putString("\n");
         putString(args);
         putString("\n");
+    }
+}
+
+char Terminal::waitForInputKey() {
+    while (true) {
+        pollKeyboard();
+        char key = getLastKey();
+        if (key != 0) {
+            return key;
+        }
+        for (volatile int spin = 0; spin < 10000; ++spin) {
+            asm volatile("pause");
+        }
+    }
+}
+
+bool Terminal::readEditorLine(char* buffer, int bufferSize) {
+    if (!buffer || bufferSize <= 0) {
+        return false;
+    }
+
+    int len = 0;
+    buffer[0] = '\0';
+    while (true) {
+        char key = waitForInputKey();
+        unsigned char uc = static_cast<unsigned char>(key);
+
+        if (key == '\n' || key == '\r') {
+            buffer[len] = '\0';
+            putString("\n");
+            return true;
+        }
+
+        if (key == '\b' || uc == KEY_DEL) {
+            if (len > 0) {
+                len--;
+                int x = vga->get_x();
+                int y = vga->get_y();
+                if (x > 0) {
+                    vga->set_xy(x - 1, y);
+                    vga->putCharAt(' ', x - 1, y);
+                    vga->set_xy(x - 1, y);
+                }
+            }
+            continue;
+        }
+
+        if (uc >= 0x20 && uc < 0x7F && len < bufferSize - 1) {
+            buffer[len++] = key;
+            putChar(key);
+        }
+    }
+}
+
+void Terminal::printContentLine(const char* start, const char* end) {
+    while (start < end) {
+        if (*start != '\r') {
+            putChar(*start);
+        }
+        start++;
+    }
+    putString("\n");
+}
+
+void Terminal::cmdRm(const char* args) {
+    const char* p = args;
+    static char token[96];
+    static char path[128];
+    bool recursive = false;
+    bool force = false;
+
+    if (!parseToken(p, token, sizeof(token))) {
+        putString("\nrm: missing operand\n");
+        return;
+    }
+
+    if (token[0] == '-') {
+        for (int i = 1; token[i] != '\0'; i++) {
+            if (token[i] == 'r' || token[i] == 'R') recursive = true;
+            else if (token[i] == 'f') force = true;
+            else {
+                putString("\nrm: unsupported option\n");
+                return;
+            }
+        }
+        if (!parseToken(p, path, sizeof(path))) {
+            putString("\nrm: missing operand\n");
+            return;
+        }
+    } else {
+        int i = 0;
+        for (; token[i] && i < static_cast<int>(sizeof(path)) - 1; i++) path[i] = token[i];
+        path[i] = '\0';
+    }
+
+    if (strcmp(path, "/") == 0 || strcmp(path, ".") == 0 || strcmp(path, "..") == 0) {
+        putString("\nrm: refusing to remove root/current/parent directory\n");
+        return;
+    }
+
+    FileSystemEntry* entry = filesystem->resolvePath(path);
+    if (entry == nullptr) {
+        if (!force) putString("\nrm: file not found\n");
+        return;
+    }
+    if (entry->type == FS_TYPE_DIRECTORY && !recursive) {
+        putString("\nrm: is a directory; use rm -r\n");
+        return;
+    }
+
+    if (filesystem->remove(path, recursive)) {
+        putString("\nRemoved: ");
+        putString(path);
+        putString("\n");
+    } else if (!force) {
+        putString("\nrm: could not remove entry\n");
+    }
+}
+
+void Terminal::cmdHead(const char* args) {
+    const char* p = args;
+    static char token[96];
+    static char file[128];
+    static char content[FS_MAX_FILE_SIZE];
+    int maxLines = 10;
+
+    if (!parseToken(p, token, sizeof(token))) {
+        putString("\nhead: missing file operand\n");
+        return;
+    }
+    if (strcmp(token, "-n") == 0) {
+        if (!parseToken(p, token, sizeof(token)) || !parsePositiveInt(token, &maxLines)) {
+            putString("\nhead: invalid line count\n");
+            return;
+        }
+        if (!parseToken(p, file, sizeof(file))) {
+            putString("\nhead: missing file operand\n");
+            return;
+        }
+    } else {
+        int i = 0;
+        for (; token[i] && i < static_cast<int>(sizeof(file)) - 1; i++) file[i] = token[i];
+        file[i] = '\0';
+    }
+
+    if (!filesystem->readFile(file, content, sizeof(content))) {
+        putString("\nhead: cannot open file\n");
+        return;
+    }
+
+    putString("\n");
+    int lines = 0;
+    for (int i = 0; content[i] != '\0' && lines < maxLines; i++) {
+        putChar(content[i]);
+        if (content[i] == '\n') {
+            lines++;
+        }
+    }
+    if (content[0] != '\0' && lines < maxLines) {
+        putString("\n");
+    }
+}
+
+void Terminal::cmdTail(const char* args) {
+    const char* p = args;
+    static char token[96];
+    static char file[128];
+    static char content[FS_MAX_FILE_SIZE];
+    int maxLines = 10;
+    bool follow = false;
+
+    if (!parseToken(p, token, sizeof(token))) {
+        putString("\ntail: missing file operand\n");
+        return;
+    }
+
+    if (strcmp(token, "-f") == 0) {
+        follow = true;
+        if (!parseToken(p, file, sizeof(file))) {
+            putString("\ntail: missing file operand\n");
+            return;
+        }
+    } else if (strcmp(token, "-n") == 0) {
+        if (!parseToken(p, token, sizeof(token)) || !parsePositiveInt(token, &maxLines)) {
+            putString("\ntail: invalid line count\n");
+            return;
+        }
+        if (!parseToken(p, file, sizeof(file))) {
+            putString("\ntail: missing file operand\n");
+            return;
+        }
+    } else {
+        int i = 0;
+        for (; token[i] && i < static_cast<int>(sizeof(file)) - 1; i++) file[i] = token[i];
+        file[i] = '\0';
+    }
+
+    if (!filesystem->readFile(file, content, sizeof(content))) {
+        putString("\ntail: cannot open file\n");
+        return;
+    }
+
+    int totalLines = 0;
+    bool hasText = content[0] != '\0';
+    if (hasText) {
+        totalLines = 1;
+        for (int i = 0; content[i] != '\0'; i++) {
+            if (content[i] == '\n' && content[i + 1] != '\0') {
+                totalLines++;
+            }
+        }
+    }
+
+    int firstLine = totalLines - maxLines + 1;
+    if (firstLine < 1) firstLine = 1;
+    int line = 1;
+
+    putString("\n");
+    for (int i = 0; content[i] != '\0'; i++) {
+        if (line >= firstLine) {
+            putChar(content[i]);
+        }
+        if (content[i] == '\n') {
+            line++;
+        }
+    }
+    if (hasText) {
+        putString("\n");
+    }
+    if (follow) {
+        putString("tail: -f is not supported yet; MrHakOS has no background file notifications or scheduler\n");
+    }
+}
+
+void Terminal::cmdLess(const char* args) {
+    const char* p = args;
+    static char file[128];
+    static char content[FS_MAX_FILE_SIZE];
+
+    if (!parseToken(p, file, sizeof(file))) {
+        putString("\nless: missing file operand\n");
+        return;
+    }
+    if (!filesystem->readFile(file, content, sizeof(content))) {
+        putString("\nless: cannot open file\n");
+        return;
+    }
+
+    putString("\n");
+    int shownLines = 0;
+    for (int i = 0; content[i] != '\0'; i++) {
+        putChar(content[i]);
+        if (content[i] == '\n') {
+            shownLines++;
+        }
+        if (shownLines >= 20 && content[i + 1] != '\0') {
+            putString("\n--More-- SPACE/ENTER next, q quit");
+            char key = waitForInputKey();
+            putString("\n");
+            if (key == 'q' || key == 'Q') {
+                return;
+            }
+            shownLines = 0;
+        }
+    }
+    putString("\n");
+}
+
+void Terminal::findWalk(FileSystemEntry* entry, const char* path, const char* nameFilter, int typeFilter) {
+    if (!entry || !path) {
+        return;
+    }
+
+    bool typeOk = (typeFilter == 0) ||
+        (typeFilter == 1 && isFileEntry(entry)) ||
+        (typeFilter == 2 && entry->type == FS_TYPE_DIRECTORY);
+    bool nameOk = (!nameFilter || nameFilter[0] == '\0' || strcmp(entry->name, nameFilter) == 0);
+
+    if (typeOk && nameOk) {
+        putString(path);
+        if (entry->type == FS_TYPE_DIRECTORY && strcmp(path, "/") != 0) {
+            putString("/");
+        }
+        putString("\n");
+    }
+
+    if (entry->type != FS_TYPE_DIRECTORY) {
+        return;
+    }
+
+    for (size_t i = 0; i < entry->childCount; i++) {
+        char childPath[256];
+        appendPath(childPath, sizeof(childPath), path, entry->children[i]->name);
+        findWalk(entry->children[i], childPath, nameFilter, typeFilter);
+    }
+}
+
+void Terminal::cmdFind(const char* args) {
+    const char* p = args;
+    static char path[128];
+    static char opt[32];
+    static char value[96];
+    int typeFilter = 0;
+    const char* nameFilter = "";
+
+    if (!parseToken(p, path, sizeof(path))) {
+        putString("\nfind: missing path\n");
+        return;
+    }
+
+    if (parseToken(p, opt, sizeof(opt))) {
+        if (strcmp(opt, "-name") == 0) {
+            if (!parseToken(p, value, sizeof(value))) {
+                putString("\nfind: missing name value\n");
+                return;
+            }
+            nameFilter = value;
+        } else if (strcmp(opt, "-type") == 0) {
+            if (!parseToken(p, value, sizeof(value))) {
+                putString("\nfind: missing type value\n");
+                return;
+            }
+            if (strcmp(value, "f") == 0) typeFilter = 1;
+            else if (strcmp(value, "d") == 0) typeFilter = 2;
+            else {
+                putString("\nfind: unsupported type\n");
+                return;
+            }
+        } else {
+            putString("\nfind: unsupported option\n");
+            return;
+        }
+    }
+
+    FileSystemEntry* base = filesystem->resolvePath(path);
+    if (base == nullptr) {
+        putString("\nfind: path not found\n");
+        return;
+    }
+
+    putString("\n");
+    findWalk(base, path, nameFilter, typeFilter);
+}
+
+void Terminal::grepFile(const char* path, const char* pattern, bool showLineNumbers, bool showPath) {
+    static char content[FS_MAX_FILE_SIZE];
+    if (!filesystem->readFile(path, content, sizeof(content))) {
+        if (!showPath) {
+            putString("\ngrep: cannot open file\n");
+        }
+        return;
+    }
+
+    int lineNo = 1;
+    const char* line = content;
+    while (*line != '\0') {
+        const char* end = line;
+        while (*end != '\0' && *end != '\n' && *end != '\r') {
+            end++;
+        }
+
+        if (lineContains(line, end, pattern)) {
+            if (showPath) {
+                putString(path);
+                putString(":");
+            }
+            if (showLineNumbers) {
+                static char number[16];
+                u32ToDec(static_cast<uint32_t>(lineNo), number, sizeof(number));
+                putString(number);
+                putString(":");
+            }
+            printContentLine(line, end);
+        }
+
+        while (*end == '\n' || *end == '\r') {
+            end++;
+        }
+        line = end;
+        lineNo++;
+    }
+}
+
+void Terminal::grepWalk(FileSystemEntry* entry, const char* path, const char* pattern, bool showLineNumbers) {
+    if (!entry || !path) {
+        return;
+    }
+    if (isFileEntry(entry)) {
+        grepFile(path, pattern, showLineNumbers, true);
+        return;
+    }
+    if (entry->type != FS_TYPE_DIRECTORY) {
+        return;
+    }
+    for (size_t i = 0; i < entry->childCount; i++) {
+        char childPath[256];
+        appendPath(childPath, sizeof(childPath), path, entry->children[i]->name);
+        grepWalk(entry->children[i], childPath, pattern, showLineNumbers);
+    }
+}
+
+void Terminal::cmdGrep(const char* args) {
+    const char* p = args;
+    static char token[128];
+    static char pattern[128];
+    static char path[128];
+    bool recursive = false;
+    bool showLineNumbers = false;
+
+    if (!parseToken(p, token, sizeof(token))) {
+        putString("\ngrep: missing search text\n");
+        return;
+    }
+    if (token[0] == '-') {
+        if (strcmp(token, "-r") == 0) recursive = true;
+        else if (strcmp(token, "-rn") == 0 || strcmp(token, "-nr") == 0) {
+            recursive = true;
+            showLineNumbers = true;
+        } else if (strcmp(token, "-n") == 0) {
+            showLineNumbers = true;
+        } else {
+            putString("\ngrep: unsupported option\n");
+            return;
+        }
+        if (!parseToken(p, pattern, sizeof(pattern))) {
+            putString("\ngrep: missing search text\n");
+            return;
+        }
+    } else {
+        int i = 0;
+        for (; token[i] && i < static_cast<int>(sizeof(pattern)) - 1; i++) pattern[i] = token[i];
+        pattern[i] = '\0';
+    }
+
+    if (!parseToken(p, path, sizeof(path))) {
+        putString("\ngrep: missing file operand\n");
+        return;
+    }
+
+    FileSystemEntry* entry = filesystem->resolvePath(path);
+    if (entry == nullptr) {
+        putString("\ngrep: path not found\n");
+        return;
+    }
+
+    putString("\n");
+    if (recursive) {
+        grepWalk(entry, path, pattern, showLineNumbers);
+    } else {
+        if (entry->type == FS_TYPE_DIRECTORY) {
+            putString("grep: target is a directory; use grep -r\n");
+            return;
+        }
+        grepFile(path, pattern, showLineNumbers, false);
+    }
+}
+
+void Terminal::cmdChmod(const char* args) {
+    (void)args;
+    putString("\nchmod: not implemented\n");
+    putString("  Missing filesystem features: mode bits, executable bit, access checks, and exec support\n");
+    putString("  Add fields like mode/uid/gid to FileSystemEntry before enabling chmod\n");
+}
+
+void Terminal::cmdChown(const char* args) {
+    (void)args;
+    putString("\nchown: not implemented\n");
+    putString("  Missing OS features: users, groups, owner IDs, authentication, and recursive ownership changes\n");
+    putString("  Add uid/gid metadata and a user model before enabling chown\n");
+}
+
+void Terminal::cmdNano(const char* args) {
+    const char* p = args;
+    static char file[128];
+    static char buffer[FS_MAX_FILE_SIZE];
+    static char line[160];
+
+    if (!parseToken(p, file, sizeof(file))) {
+        putString("\nnano: missing file operand\n");
+        return;
+    }
+
+    if (!filesystem->readFile(file, buffer, sizeof(buffer))) {
+        buffer[0] = '\0';
+    }
+
+    vga->clear();
+    putString("MrHakOS nano-lite: ");
+    putString(file);
+    putString("\nCommands: .save saves, .wq saves/exits, .quit exits without saving\n");
+    putString("------------------------------------------------------------\n");
+    if (buffer[0] != '\0') {
+        putString(buffer);
+        if (buffer[strlen(buffer) - 1] != '\n') {
+            putString("\n");
+        }
+    }
+
+    while (true) {
+        putString("> ");
+        if (!readEditorLine(line, sizeof(line))) {
+            return;
+        }
+
+        if (strcmp(line, ".save") == 0) {
+            if (filesystem->writeFile(file, buffer)) {
+                putString("nano: saved\n");
+            } else {
+                putString("nano: save failed\n");
+            }
+            continue;
+        }
+        if (strcmp(line, ".wq") == 0) {
+            if (filesystem->writeFile(file, buffer)) {
+                putString("nano: saved\n");
+            } else {
+                putString("nano: save failed\n");
+            }
+            return;
+        }
+        if (strcmp(line, ".quit") == 0) {
+            putString("nano: quit without saving\n");
+            return;
+        }
+
+        size_t len = strlen(buffer);
+        size_t lineLen = strlen(line);
+        if (len + lineLen + 2 >= FS_MAX_FILE_SIZE) {
+            putString("nano: buffer full\n");
+            continue;
+        }
+        for (size_t i = 0; i < lineLen; i++) {
+            buffer[len++] = line[i];
+        }
+        buffer[len++] = '\n';
+        buffer[len] = '\0';
     }
 }
 

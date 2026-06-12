@@ -19,7 +19,7 @@ enum FileSystemConstants {
     FS_MAX_PATH_DEPTH = 8,
     
     // Memory pool size for filesystem allocations (in bytes)
-    FS_MEMORY_POOL_SIZE = 4096
+    FS_MEMORY_POOL_SIZE = 32768
 };
 
 // File types
@@ -68,9 +68,9 @@ typedef struct FileSystemEntry {
  * @class FileSystem
  * @brief A simple in-memory filesystem implementation for MrHakOS
  * 
- * This class provides basic filesystem operations such as creating directories,
- * navigating the directory structure, and listing directory contents.
- * File content storage is not implemented in this version.
+ * This class provides basic RAM-only filesystem operations such as creating
+ * directories, navigating paths, creating files, reading files, and removing
+ * entries. There is no disk persistence yet.
  */
 class FileSystem {
 private:
@@ -93,6 +93,9 @@ private:
      * @param parent Parent directory of the entry
      */
     void initEntry(FileSystemEntry* entry, const char* name, FileType type, FileSystemEntry* parent);
+
+    bool splitParentPath(const char* path, FileSystemEntry** parent, char* leaf, size_t leafSize);
+    bool isDescendantOf(FileSystemEntry* entry, FileSystemEntry* ancestor);
     
 public:
     /**
@@ -133,6 +136,39 @@ public:
      * This is used by the terminal's ls command
      */
     void ls();
+
+    /**
+     * @brief Resolve an absolute or relative path to an entry
+     * @param path Path to resolve. Supports /, ., .., and slash-separated names.
+     * @return Pointer to the entry, or nullptr if not found
+     */
+    FileSystemEntry* resolvePath(const char* path);
+
+    /**
+     * @brief Create or overwrite a regular file with content
+     * @param path File path
+     * @param content Null-terminated text content
+     * @return true if successful, false otherwise
+     */
+    bool createFile(const char* path, const char* content);
+
+    /**
+     * @brief Write a regular file. Alias for createFile for shell semantics.
+     */
+    bool writeFile(const char* path, const char* content);
+
+    /**
+     * @brief Read a regular file or .hak file into a caller buffer
+     */
+    bool readFile(const char* path, char* buffer, size_t bufferSize);
+
+    /**
+     * @brief Remove a file or directory from the RAM filesystem
+     * @param path Entry to remove
+     * @param recursive Required for removing directories
+     * @return true if successful, false otherwise
+     */
+    bool remove(const char* path, bool recursive);
     
     /**
      * @brief Create a new .hak file with the given content
@@ -179,6 +215,11 @@ public:
      * @return Pointer to the current directory entry
      */
     FileSystemEntry* getCurrentDirectory();
+
+    /**
+     * @brief Get the root directory
+     */
+    FileSystemEntry* getRootDirectory();
 };
 
 // Global filesystem instance

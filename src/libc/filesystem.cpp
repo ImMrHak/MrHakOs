@@ -93,27 +93,32 @@ void FileSystem::initEntry(FileSystemEntry* entry, const char* name, FileType ty
     entry->type = type;
     entry->parent = parent;
     
-    // Initialize directory metadata only; avoid blanket zeroing children array
-    // We rely on childCount to control iteration and set children entries lazily.
+    // Initialize metadata only; avoid blanket zeroing because this freestanding
+    // environment keeps initialization explicit.
     if (type == FS_TYPE_DIRECTORY) {
         entry->childCount = 0;
+    } else {
+        entry->childCount = 0;
+        entry->file.content = nullptr;
+        entry->file.contentSize = 0;
     }
     hidden_vga_touch(49);
 }
 
 bool FileSystem::mkdir(const char* name) {
-    // Check if name is valid
-    if (name == nullptr || name[0] == '\0') {
+    FileSystemEntry* parent = nullptr;
+    char leaf[FS_MAX_NAME_LENGTH];
+    if (!splitParentPath(name, &parent, leaf, sizeof(leaf))) {
         return false;
     }
     
     // Check if directory already exists
-    if (findEntry(name, currentDirectory) != nullptr) {
+    if (findEntry(leaf, parent) != nullptr) {
         return false; // Entry with this name already exists
     }
     
     // Check if current directory has space for a new entry
-    if (currentDirectory->childCount >= FS_MAX_FILES) {
+    if (parent->childCount >= FS_MAX_FILES) {
         return false; // Directory is full
     }
     
@@ -127,40 +132,17 @@ bool FileSystem::mkdir(const char* name) {
     }
     
     // Initialize new directory
-    initEntry(newDir, name, FS_TYPE_DIRECTORY, currentDirectory);
+    initEntry(newDir, leaf, FS_TYPE_DIRECTORY, parent);
     
     // Add new directory to current directory's children
-    currentDirectory->children[currentDirectory->childCount] = newDir;
-    currentDirectory->childCount++;
+    parent->children[parent->childCount] = newDir;
+    parent->childCount++;
     
     return true;
 }
 
 bool FileSystem::cd(const char* path) {
-    // Handle special cases
-    if (strcmp(path, "/") == 0) {
-        // Change to root directory
-        currentDirectory = root;
-        return true;
-    }
-    
-    if (strcmp(path, ".") == 0) {
-        // Stay in current directory
-        return true;
-    }
-    
-    if (strcmp(path, "..") == 0) {
-        // Go up one level
-        if (currentDirectory->parent != nullptr) {
-            currentDirectory = currentDirectory->parent;
-            return true;
-        }
-        return false; // Already at root
-    }
-    
-    // Find directory in current directory
-    FileSystemEntry* entry = findEntry(path, currentDirectory);
-    
+    FileSystemEntry* entry = resolvePath(path);
     if (entry != nullptr && entry->type == FS_TYPE_DIRECTORY) {
         currentDirectory = entry;
         return true;
@@ -186,6 +168,10 @@ void FileSystem::ls() {
 }
 
 FileSystemEntry* FileSystem::findEntry(const char* name, FileSystemEntry* directory) {
+    if (name == nullptr || directory == nullptr || directory->type != FS_TYPE_DIRECTORY) {
+        return nullptr;
+    }
+
     // Search for entry with given name in the specified directory
     for (size_t i = 0; i < directory->childCount; i++) {
         if (strcmp(directory->children[i]->name, name) == 0) {
@@ -194,6 +180,123 @@ FileSystemEntry* FileSystem::findEntry(const char* name, FileSystemEntry* direct
     }
     
     return nullptr; // Entry not found
+}
+
+FileSystemEntry* FileSystem::resolvePath(const char* path) {
+    if (path == nullptr || path[0] == '\0') {
+        return nullptr;
+    }
+
+    FileSystemEntry* entry = (path[0] == '/') ? root : currentDirectory;
+    if (entry == nullptr) {
+        return nullptr;
+    }
+
+    int i = 0;
+    while (path[i] == '/') {
+        i++;
+    }
+
+    if (path[i] == '\0') {
+        return entry;
+    }
+
+    while (path[i] != '\0') {
+        while (path[i] == '/') {
+            i++;
+        }
+        if (path[i] == '\0') {
+            break;
+        }
+
+        char component[FS_MAX_NAME_LENGTH];
+        int c = 0;
+        while (path[i] != '\0' && path[i] != '/') {
+            if (c >= FS_MAX_NAME_LENGTH - 1) {
+                return nullptr;
+            }
+            component[c++] = path[i++];
+        }
+        component[c] = '\0';
+
+        if (strcmp(component, ".") == 0) {
+            continue;
+        }
+        if (strcmp(component, "..") == 0) {
+            if (entry->parent != nullptr) {
+                entry = entry->parent;
+            }
+            continue;
+        }
+        if (entry->type != FS_TYPE_DIRECTORY) {
+            return nullptr;
+        }
+        entry = findEntry(component, entry);
+        if (entry == nullptr) {
+            return nullptr;
+        }
+    }
+
+    return entry;
+}
+
+bool FileSystem::splitParentPath(const char* path, FileSystemEntry** parent, char* leaf, size_t leafSize) {
+    if (path == nullptr || path[0] == '\0' || parent == nullptr || leaf == nullptr || leafSize == 0) {
+        return false;
+    }
+    if (strcmp(path, "/") == 0 || strcmp(path, ".") == 0 || strcmp(path, "..") == 0) {
+        return false;
+    }
+
+    const char* lastSlash = nullptr;
+    for (int i = 0; path[i] != '\0'; i++) {
+        if (path[i] == '/') {
+            lastSlash = &path[i];
+        }
+    }
+
+    const char* leafStart = path;
+    FileSystemEntry* parentDir = currentDirectory;
+
+    if (lastSlash != nullptr) {
+        leafStart = lastSlash + 1;
+        if (leafStart[0] == '\0') {
+            return false;
+        }
+
+        if (lastSlash == path) {
+            parentDir = root;
+        } else {
+            char parentPath[256];
+            int len = static_cast<int>(lastSlash - path);
+            if (len <= 0 || len >= static_cast<int>(sizeof(parentPath))) {
+                return false;
+            }
+            for (int i = 0; i < len; i++) {
+                parentPath[i] = path[i];
+            }
+            parentPath[len] = '\0';
+            parentDir = resolvePath(parentPath);
+        }
+    }
+
+    if (parentDir == nullptr || parentDir->type != FS_TYPE_DIRECTORY) {
+        return false;
+    }
+
+    size_t leafLen = strlen(leafStart);
+    if (leafLen == 0 || leafLen >= leafSize || leafLen >= FS_MAX_NAME_LENGTH) {
+        return false;
+    }
+    for (size_t i = 0; i < leafLen; i++) {
+        if (leafStart[i] == '/') {
+            return false;
+        }
+        leaf[i] = leafStart[i];
+    }
+    leaf[leafLen] = '\0';
+    *parent = parentDir;
+    return true;
 }
 
 void FileSystem::getCurrentPath(char* buffer, size_t bufferSize) {
@@ -248,106 +351,62 @@ void FileSystem::getCurrentPath(char* buffer, size_t bufferSize) {
 }
 
 bool FileSystem::cp(const char* source, const char* destination) {
-    // Find source file in current directory
-    FileSystemEntry* sourceEntry = findEntry(source, currentDirectory);
-    
-    // Check if source exists and is a .hak file
-    if (sourceEntry == nullptr || sourceEntry->type != FS_TYPE_HAK_FILE) {
-        return false; // Source not found or not a file
+    FileSystemEntry* sourceEntry = resolvePath(source);
+    if (sourceEntry == nullptr || sourceEntry->type == FS_TYPE_DIRECTORY) {
+        return false;
     }
-    
-    // Parse destination to see if it contains a directory path
-    FileSystemEntry* targetDir = currentDirectory;
-    const char* targetFilename = destination;
-    
-    // Check if destination contains a directory separator (/)
-    const char* lastSlash = nullptr;
-    for (int i = 0; destination[i] != '\0'; i++) {
-        if (destination[i] == '/') {
-            lastSlash = &destination[i];
-        }
+
+    if (resolvePath(destination) != nullptr) {
+        return false;
     }
-    
-    // If there's a slash, we need to navigate to the target directory
-    if (lastSlash != nullptr) {
-        // Extract directory name
-        static char dirName[FS_MAX_NAME_LENGTH];
-        int dirLen = lastSlash - destination;
-        if (dirLen >= FS_MAX_NAME_LENGTH) {
-            return false; // Directory name too long
-        }
-        
-        for (int i = 0; i < dirLen; i++) {
-            dirName[i] = destination[i];
-        }
-        dirName[dirLen] = '\0';
-        
-        // Find the target directory
-        targetDir = findEntry(dirName, currentDirectory);
-        if (targetDir == nullptr || targetDir->type != FS_TYPE_DIRECTORY) {
-            return false; // Target directory not found
-        }
-        
-        // Filename is after the slash
-        targetFilename = lastSlash + 1;
-    }
-    
-    // Check if destination already exists in target directory
-    if (findEntry(targetFilename, targetDir) != nullptr) {
-        return false; // Destination already exists
-    }
-    
-    // Check if destination has .hak extension
-    if (!hasExtension(targetFilename, ".hak")) {
-        return false; // Only .hak files supported
-    }
-    
-    // Save current directory and switch to target
-    FileSystemEntry* savedDir = currentDirectory;
-    currentDirectory = targetDir;
-    
-    // Create new file with copied content
-    bool result = createHakFile(targetFilename, sourceEntry->file.content);
-    
-    // Restore current directory
-    currentDirectory = savedDir;
-    
-    return result;
+
+    return createFile(destination, sourceEntry->file.content ? sourceEntry->file.content : "");
 }
 
 bool FileSystem::mv(const char* source, const char* destination) {
-    // Find source entry in current directory
-    FileSystemEntry* sourceEntry = findEntry(source, currentDirectory);
-    
-    // Check if source exists
-    if (sourceEntry == nullptr) {
-        return false; // Source not found
+    FileSystemEntry* sourceParent = nullptr;
+    FileSystemEntry* destParent = nullptr;
+    char sourceName[FS_MAX_NAME_LENGTH];
+    char destName[FS_MAX_NAME_LENGTH];
+
+    if (!splitParentPath(source, &sourceParent, sourceName, sizeof(sourceName)) ||
+        !splitParentPath(destination, &destParent, destName, sizeof(destName))) {
+        return false;
     }
-    
-    // Check if destination already exists
-    if (findEntry(destination, currentDirectory) != nullptr) {
-        return false; // Destination already exists
+
+    FileSystemEntry* sourceEntry = findEntry(sourceName, sourceParent);
+    if (sourceEntry == nullptr || findEntry(destName, destParent) != nullptr) {
+        return false;
     }
-    
-    // For files, check .hak extension
-    if (sourceEntry->type == FS_TYPE_HAK_FILE) {
-        if (!hasExtension(destination, ".hak")) {
-            return false; // Only .hak files supported
-        }
+    if (sourceEntry == root || isDescendantOf(destParent, sourceEntry)) {
+        return false;
     }
-    
-    // Rename the entry (simple name change)
-    size_t nameLen = strlen(destination);
-    if (nameLen >= FS_MAX_NAME_LENGTH) {
-        return false; // Name too long
+    if (sourceParent != destParent && destParent->childCount >= FS_MAX_FILES) {
+        return false;
     }
-    
-    // Copy new name
+
+    size_t nameLen = strlen(destName);
     for (size_t i = 0; i < nameLen; i++) {
-        sourceEntry->name[i] = destination[i];
+        sourceEntry->name[i] = destName[i];
     }
     sourceEntry->name[nameLen] = '\0';
-    
+
+    if (sourceParent != destParent) {
+        size_t index = 0;
+        while (index < sourceParent->childCount && sourceParent->children[index] != sourceEntry) {
+            index++;
+        }
+        if (index >= sourceParent->childCount) {
+            return false;
+        }
+        for (size_t i = index; i + 1 < sourceParent->childCount; i++) {
+            sourceParent->children[i] = sourceParent->children[i + 1];
+        }
+        sourceParent->childCount--;
+        sourceEntry->parent = destParent;
+        destParent->children[destParent->childCount++] = sourceEntry;
+    }
+
     return true;
 }
 
@@ -372,25 +431,26 @@ bool FileSystem::hasExtension(const char* filename, const char* extension) {
     return strcmp(filename + filenameLen - extensionLen, extension) == 0;
 }
 
-bool FileSystem::createHakFile(const char* name, const char* content) {
+bool FileSystem::createFile(const char* path, const char* content) {
     // Check if name is valid
-    if (name == nullptr || name[0] == '\0') {
+    if (path == nullptr || path[0] == '\0') {
         return false;
     }
-    
-    // Check if file has .hak extension
-    if (!hasExtension(name, ".hak")) {
-        return false; // Not a .hak file
+
+    FileSystemEntry* parent = nullptr;
+    char leaf[FS_MAX_NAME_LENGTH];
+    if (!splitParentPath(path, &parent, leaf, sizeof(leaf))) {
+        return false;
     }
-    
-    FileSystemEntry* file = findEntry(name, currentDirectory);
-    if (file != nullptr && file->type != FS_TYPE_HAK_FILE) {
-        return false; // A directory or unsupported entry already uses this name.
+
+    FileSystemEntry* file = findEntry(leaf, parent);
+    if (file != nullptr && file->type == FS_TYPE_DIRECTORY) {
+        return false;
     }
 
     if (file == nullptr) {
         // Check if current directory has space for a new entry.
-        if (currentDirectory->childCount >= FS_MAX_FILES) {
+        if (parent->childCount >= FS_MAX_FILES) {
             return false; // Directory is full.
         }
 
@@ -401,13 +461,16 @@ bool FileSystem::createHakFile(const char* name, const char* content) {
             return false; // Out of memory.
         }
 
-        initEntry(file, name, FS_TYPE_HAK_FILE, currentDirectory);
-        currentDirectory->children[currentDirectory->childCount] = file;
-        currentDirectory->childCount++;
+        initEntry(file, leaf, hasExtension(leaf, ".hak") ? FS_TYPE_HAK_FILE : FS_TYPE_FILE, parent);
+        parent->children[parent->childCount] = file;
+        parent->childCount++;
     }
 
     // Set or replace file content. The bump allocator does not reclaim the old
     // content buffer yet, but overwriting keeps shell semantics predictable.
+    if (content == nullptr) {
+        content = "";
+    }
     size_t contentLen = strlen(content);
     if (contentLen > FS_MAX_FILE_SIZE - 1) {
         contentLen = FS_MAX_FILE_SIZE - 1; // Truncate if too long.
@@ -428,18 +491,21 @@ bool FileSystem::createHakFile(const char* name, const char* content) {
     return true;
 }
 
-bool FileSystem::readHakFile(const char* name, char* buffer, size_t bufferSize) {
+bool FileSystem::writeFile(const char* path, const char* content) {
+    return createFile(path, content);
+}
+
+bool FileSystem::readFile(const char* path, char* buffer, size_t bufferSize) {
     // Check parameters
-    if (name == nullptr || buffer == nullptr || bufferSize == 0) {
+    if (path == nullptr || buffer == nullptr || bufferSize == 0) {
         return false;
     }
     
-    // Find file in current directory
-    FileSystemEntry* entry = findEntry(name, currentDirectory);
+    FileSystemEntry* entry = resolvePath(path);
     
-    // Check if file exists and is a .hak file
-    if (entry == nullptr || entry->type != FS_TYPE_HAK_FILE) {
-        return false; // File not found or not a .hak file
+    // Check if file exists and is readable
+    if (entry == nullptr || entry->type == FS_TYPE_DIRECTORY) {
+        return false;
     }
     
     // Copy content to buffer
@@ -454,4 +520,60 @@ bool FileSystem::readHakFile(const char* name, char* buffer, size_t bufferSize) 
     buffer[copySize] = '\0';
     
     return true;
+}
+
+bool FileSystem::createHakFile(const char* name, const char* content) {
+    return createFile(name, content);
+}
+
+bool FileSystem::readHakFile(const char* name, char* buffer, size_t bufferSize) {
+    return readFile(name, buffer, bufferSize);
+}
+
+bool FileSystem::isDescendantOf(FileSystemEntry* entry, FileSystemEntry* ancestor) {
+    FileSystemEntry* current = entry;
+    while (current != nullptr) {
+        if (current == ancestor) {
+            return true;
+        }
+        current = current->parent;
+    }
+    return false;
+}
+
+bool FileSystem::remove(const char* path, bool recursive) {
+    FileSystemEntry* parent = nullptr;
+    char leaf[FS_MAX_NAME_LENGTH];
+    if (!splitParentPath(path, &parent, leaf, sizeof(leaf))) {
+        return false;
+    }
+
+    FileSystemEntry* entry = findEntry(leaf, parent);
+    if (entry == nullptr || entry == root) {
+        return false;
+    }
+    if (entry->type == FS_TYPE_DIRECTORY && !recursive) {
+        return false;
+    }
+    if (entry->type == FS_TYPE_DIRECTORY && isDescendantOf(currentDirectory, entry)) {
+        return false;
+    }
+
+    size_t index = 0;
+    while (index < parent->childCount && parent->children[index] != entry) {
+        index++;
+    }
+    if (index >= parent->childCount) {
+        return false;
+    }
+    for (size_t i = index; i + 1 < parent->childCount; i++) {
+        parent->children[i] = parent->children[i + 1];
+    }
+    parent->childCount--;
+    entry->parent = nullptr;
+    return true;
+}
+
+FileSystemEntry* FileSystem::getRootDirectory() {
+    return root;
 }
